@@ -259,7 +259,7 @@
              archimateElement="id-7a25e771403f4c06a1c50aec55e1a84b"
              targetConnections="id-c4a521ea51084995b0fea3a89b61b90c"
              fillColor="#c9e7cb" fontColor="#000000">
-        <bounds x="84" y="30" width="230" height="55"/>
+        <bounds x="40" y="20" width="160" height="55"/>
       </child>
 
       <!-- Camunda Desktop Modeler -->
@@ -267,7 +267,7 @@
              archimateElement="id-addb0989fb9b46469875164a6830666d"
              targetConnections="id-16ce3731d20a4f0087e1544bd57d0bb9"
              fillColor="#c9e7cb" fontColor="#000000">
-        <bounds x="686" y="30" width="230" height="55"/>
+        <bounds x="1000" y="20" width="160" height="55"/>
       </child>
 
       <!-- ======================================================== -->
@@ -279,7 +279,7 @@
              archimateElement="id-295c8bd9b6cb4168bff14a9b02611d09"
              targetConnections="id-30bcefe038534bc3a34107154027edbb"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="30" y="140" width="200" height="55"/>
+        <bounds x="40" y="140" width="160" height="55"/>
       </child>
 
       <!-- Element Configuration Service -->
@@ -287,7 +287,7 @@
              archimateElement="id-366d60e640804c2589b6be71b19d8500"
              targetConnections="id-c79d355dc3764fc6831d88e049f10ab0"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="250" y="140" width="200" height="55"/>
+        <bounds x="340" y="140" width="160" height="55"/>
       </child>
 
       <!-- Form Management Service -->
@@ -295,7 +295,7 @@
              archimateElement="id-63455fa119c4424b87beb9499c115770"
              targetConnections="id-82885297ee464f9db4388100616f2258"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="470" y="140" width="200" height="55"/>
+        <bounds x="640" y="140" width="160" height="55"/>
       </child>
 
       <!-- Introspection Service -->
@@ -303,7 +303,7 @@
              archimateElement="id-6425a1d14342452aaf57736dd7008f99"
              targetConnections="id-4db89c7be9184abead867016672397f1"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="690" y="140" width="200" height="55"/>
+        <bounds x="940" y="140" width="160" height="55"/>
       </child>
 
       <!-- ======================================================== -->
@@ -315,7 +315,7 @@
              archimateElement="id-0487346ed764462e83d78f184015f3a5"
              targetConnections="id-98a034fd6f744849907c4f30321b223c"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="30" y="250" width="200" height="55"/>
+        <bounds x="40" y="260" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-30bcefe038534bc3a34107154027edbb"
                           source="id-7985ff6ad01f485093a118bcde002a0f" target="id-6cf264da5ee547268ffa6d91c5b977e5"
                           archimateRelationship="id-2180cf9b40dd46a4ab08935402313654"/>
@@ -329,7 +329,7 @@
              archimateElement="id-4ab78eced1354c638a2727e1105b7a40"
              targetConnections="id-4baa7a17debe47f5a90a2bedba1748ea"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="250" y="250" width="200" height="55"/>
+        <bounds x="340" y="260" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-c79d355dc3764fc6831d88e049f10ab0"
                           source="id-391559e69f3c4b3ca112bb53c7a22a40" target="id-3a492cf6563f4f4babe14ea5a25ce7fd"
                           archimateRelationship="id-d71b54b4f8a4485390f5120793410730"/>
@@ -340,7 +340,7 @@
              archimateElement="id-0d4f83efaa6a474b857c7fd7a1b98534"
              targetConnections="id-6aee72dbd3b445bfac532046034a2e36"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="470" y="250" width="200" height="55"/>
+        <bounds x="640" y="260" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-82885297ee464f9db4388100616f2258"
                           source="id-68e448bedebd42e78b5458a2c9a35ee5" target="id-9202f9c33d934370a6441a7fde632e35"
                           archimateRelationship="id-403eca2ac82b4231b0752aab2db12360"/>
@@ -354,7 +354,7 @@
              archimateElement="id-c0d78509c3a74d0cba22021f20ce9b35"
              targetConnections="id-96bfc020e40045b28a8cb085fd8dec60"
              fillColor="#ffffb5" fontColor="#000000">
-        <bounds x="690" y="250" width="200" height="55"/>
+        <bounds x="940" y="260" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-4db89c7be9184abead867016672397f1"
                           source="id-0669837ec3074660a11aad61f00d29dd" target="id-f4b9e6a05d754ea29739bf682fea218f"
                           archimateRelationship="id-91450e22d70b49fab07d4be7a61f020d"/>
@@ -372,7 +372,7 @@
              archimateElement="id-a5a282bf8854457fab7f15d1e7ea1575"
              targetConnections="id-632d8fa40b9d422ea54a8a2351329f68 id-1c2addb707324081a7ec19f0b0c10182"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="30" y="370" width="180" height="55"/>
+        <bounds x="40" y="400" width="140" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-c4a521ea51084995b0fea3a89b61b90c"
                           source="id-914b90df60e040c3bfc7dab50907c3f1" target="id-595c65cbcad94fd4abc05f0dce421d97"
                           archimateRelationship="id-72e84abc966f46cf91a9e7ee3b3333c8"/>
@@ -385,7 +385,7 @@
       <child xsi:type="archimate:DiagramObject" id="id-b7029d7b00fe4be99d1429b68420f9ef"
              archimateElement="id-62206b8f7de74e548bf0e82d45849b2b"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="240" y="370" width="180" height="55"/>
+        <bounds x="220" y="400" width="180" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-632d8fa40b9d422ea54a8a2351329f68"
                           source="id-b7029d7b00fe4be99d1429b68420f9ef" target="id-914b90df60e040c3bfc7dab50907c3f1"
                           archimateRelationship="id-9a1f8cde675c45f9890c81d60b04eca9"/>
@@ -402,7 +402,7 @@
              archimateElement="id-c2509ebcf1614ab9aea90a35401c6380"
              targetConnections="id-72ea531b858d41bca028f7350d95325a"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="450" y="370" width="180" height="55"/>
+        <bounds x="440" y="400" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-adfa4722cb674e698c76666e65da79f1"
                           source="id-89e94a19327f4812a069461ffcc811f2" target="id-143e9b974937468e8020b34414fb4170"
                           archimateRelationship="id-891c72290e0f41a898a2565a7bda60a6"/>
@@ -413,7 +413,7 @@
              archimateElement="id-5bab562fccdb47c28266c61376efb999"
              targetConnections="id-230dd4af349a4d6d934b2d062e6ac714 id-adfa4722cb674e698c76666e65da79f1"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="450" y="460" width="180" height="55"/>
+        <bounds x="640" y="400" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-98a034fd6f744849907c4f30321b223c"
                           source="id-143e9b974937468e8020b34414fb4170" target="id-7985ff6ad01f485093a118bcde002a0f"
                           archimateRelationship="id-18c97be316ad4838ab75383f42fe87ee"/>
@@ -436,7 +436,7 @@
              archimateElement="id-c9a6bd470391417eb77d8223eb13f8e3"
              targetConnections="id-dd6f2242fdbe44f0b02dfa5375193519"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="660" y="460" width="180" height="55"/>
+        <bounds x="840" y="400" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-f1e8b44a403845b7995113a4ff1ddf64"
                           source="id-9891cd0726614e35867647d5a8e1311a" target="id-8fa78110906245c98201922f95d29bc6"
                           archimateRelationship="id-8cd3d56a238647bb9d07ccc5e0dd6604"/>
@@ -447,7 +447,7 @@
              archimateElement="id-f17e97a822d74b268bb6d52992242f9f"
              targetConnections="id-f1e8b44a403845b7995113a4ff1ddf64 id-92306a47a6e04da3ac74e1ae1968fe2a"
              fillColor="#c7def8" fontColor="#000000">
-        <bounds x="660" y="560" width="220" height="55"/>
+        <bounds x="1040" y="400" width="180" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-16ce3731d20a4f0087e1544bd57d0bb9"
                           source="id-8fa78110906245c98201922f95d29bc6" target="id-90bdf4f0fa914ade821aa4d34258558c"
                           archimateRelationship="id-fcafafd45fa349bfaefcc7aaf0678c53"/>
@@ -462,7 +462,7 @@
              archimateElement="id-e320f6d885d94014b8575886bcd3cf9f"
              targetConnections="id-bdcf94f6de1b42118f872c26e75d1a09"
              fillColor="#e2f0d9" fontColor="#000000">
-        <bounds x="30" y="460" width="180" height="55"/>
+        <bounds x="40" y="540" width="160" height="50"/>
       </child>
 
       <!-- BPMN 2.0 XML -->
@@ -470,7 +470,7 @@
              archimateElement="id-226d33c65a7e453f94cdb13cfc9095df"
              targetConnections="id-efb4fc027fee4445b20ada13dff5fc5e id-84808bb0bb844bc99bebe984191c5b18"
              fillColor="#e2f0d9" fontColor="#000000">
-        <bounds x="30" y="560" width="180" height="55"/>
+        <bounds x="440" y="540" width="160" height="50"/>
       </child>
 
       <!-- Camunda Form JSON -->
@@ -478,7 +478,7 @@
              archimateElement="id-641d9af7f3004cc79a960f995bba7de0"
              targetConnections="id-03a95a3defd04e29a7f02011bbd4661a"
              fillColor="#e2f0d9" fontColor="#000000">
-        <bounds x="250" y="560" width="180" height="55"/>
+        <bounds x="740" y="540" width="160" height="50"/>
       </child>
 
       <!-- ======================================================== -->
@@ -489,7 +489,7 @@
       <child xsi:type="archimate:DiagramObject" id="id-a36240e9ee254650b0c0edda4cdd3274"
              archimateElement="id-b0518119225b49f2b6281fc241f64b27"
              fillColor="#d4b8e0" fontColor="#000000">
-        <bounds x="30" y="680" width="280" height="55"/>
+        <bounds x="40" y="660" width="200" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-bea99bb0494047c7a1c8991585400a6a"
                           source="id-a36240e9ee254650b0c0edda4cdd3274" target="id-b7029d7b00fe4be99d1429b68420f9ef"
                           archimateRelationship="id-4d3dc3b076874a34b4900db7405fcdea"/>
@@ -506,14 +506,14 @@
              archimateElement="id-3c8afdde3b2b4ad4a0e87f81127d00ee"
              targetConnections="id-c55764efa72a4efab8fbdde5e6054076 id-07fc83237a2345caaf8040f6f3a9d4a5"
              fillColor="#d4b8e0" fontColor="#000000">
-        <bounds x="350" y="680" width="250" height="55"/>
+        <bounds x="700" y="660" width="220" height="55"/>
       </child>
 
       <!-- Chromium Renderer Process -->
       <child xsi:type="archimate:DiagramObject" id="id-a2045aae6c8c4f51917a8324d0fa3963"
              archimateElement="id-123ce5d05dab472bbd8cbfbc489b4ee6"
              fillColor="#d4b8e0" fontColor="#000000">
-        <bounds x="640" y="680" width="280" height="55"/>
+        <bounds x="960" y="660" width="220" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-92306a47a6e04da3ac74e1ae1968fe2a"
                           source="id-a2045aae6c8c4f51917a8324d0fa3963" target="id-8fa78110906245c98201922f95d29bc6"
                           archimateRelationship="id-e1db20da7f0a4392bc1f11295149c771"/>
@@ -527,7 +527,7 @@
              archimateElement="id-bfdcccb1aa6940b3a0d1ee46df2d2d88"
              targetConnections="id-2058a9f966844802be8e4cce3c0efe8c"
              fillColor="#d4b8e0" fontColor="#000000">
-        <bounds x="30" y="770" width="280" height="55"/>
+        <bounds x="280" y="660" width="180" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-e15789942ee349a6a8a2fc2f329506d9"
                           source="id-b644712739fd452e97129d393ee1447c" target="id-997b29da91cd41d7b4dd30ad07c1a7ba"
                           archimateRelationship="id-a8242706bf8e441bbe1650c9d2b35c49"/>
@@ -538,7 +538,7 @@
              archimateElement="id-55381fbc7b0046b8813f93322b3a8447"
              targetConnections="id-e15789942ee349a6a8a2fc2f329506d9"
              fillColor="#d4b8e0" fontColor="#000000">
-        <bounds x="350" y="770" width="250" height="55"/>
+        <bounds x="500" y="660" width="160" height="55"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-1c2addb707324081a7ec19f0b0c10182"
                           source="id-997b29da91cd41d7b4dd30ad07c1a7ba" target="id-914b90df60e040c3bfc7dab50907c3f1"
                           archimateRelationship="id-3b566da34acf43cd80267ea01037ef7f"/>
