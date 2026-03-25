@@ -1,4 +1,5 @@
 node_modules/
+dist/
 client/dist/
 .DS_Store
 *.log
