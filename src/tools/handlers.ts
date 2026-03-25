@@ -10,6 +10,7 @@ import {
   deleteElementSchema, getDiagramXmlSchema, importXmlSchema,
   moveElementSchema, saveDiagramSchema, addParticipantSchema, addLaneSchema,
   addEndEventTypedSchema, addMessageFlowSchema, addAnnotationSchema,
+  createDmnSchema, deployProcessSchema,
 } from './registry';
 
 const LOG_PREFIX = '[camunda-mcp]';
@@ -235,6 +236,138 @@ async function addFormField(
 }
 
 /**
+ * Creates a new DMN decision table file.
+ */
+async function createDmn(
+  params: Record<string, unknown>
+): Promise<CallToolResult> {
+  const parsed = createDmnSchema.parse(params);
+  const fileName = `${parsed.name}.dmn`;
+  const filePath = path.join(os.tmpdir(), fileName);
+
+  // Build inputs XML
+  let inputsXml = '';
+  if (parsed.inputs && parsed.inputs.length > 0) {
+    inputsXml = parsed.inputs.map((inp, i) => {
+      const id = `Input_${i + 1}`;
+      const exprId = `InputExpression_${i + 1}`;
+      return `      <input id="${id}" label="${escapeXml(inp.label)}">
+        <inputExpression id="${exprId}" typeRef="${escapeXml(inp.type)}">
+          <text>${escapeXml(inp.expression)}</text>
+        </inputExpression>
+      </input>`;
+    }).join('\n');
+  } else {
+    inputsXml = `      <input id="Input_1" label="Input">
+        <inputExpression id="InputExpression_1" typeRef="string">
+          <text></text>
+        </inputExpression>
+      </input>`;
+  }
+
+  // Build outputs XML
+  let outputsXml = '';
+  if (parsed.outputs && parsed.outputs.length > 0) {
+    outputsXml = parsed.outputs.map((out, i) => {
+      const id = `Output_${i + 1}`;
+      return `      <output id="${id}" label="${escapeXml(out.label)}" name="${escapeXml(out.name)}" typeRef="${escapeXml(out.type)}" />`;
+    }).join('\n');
+  } else {
+    outputsXml = `      <output id="Output_1" label="Output" name="output" typeRef="string" />`;
+  }
+
+  const dmnXml = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             id="Definitions_1" name="DRD" namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="Decision_1" name="${escapeXml(parsed.tableName)}">
+    <decisionTable id="DecisionTable_1" hitPolicy="${escapeXml(parsed.hitPolicy)}">
+${inputsXml}
+${outputsXml}
+    </decisionTable>
+  </decision>
+</definitions>`;
+
+  try {
+    fs.writeFileSync(filePath, dmnXml, 'utf-8');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`${LOG_PREFIX} Failed to write DMN file to ${filePath}:`, message);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: `Failed to write DMN file: ${message}` }) }],
+      isError: true,
+    };
+  }
+
+  // Attempt to open the file via Electron's shell
+  try {
+    const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
+    const { shell } = electron;
+    const errorMessage = await shell.openPath(filePath);
+    if (errorMessage) {
+      console.warn(`${LOG_PREFIX} shell.openPath warning: ${errorMessage}`);
+    }
+  } catch {
+    console.warn(`${LOG_PREFIX} Electron not available; skipping shell.openPath`);
+  }
+
+  console.log(`${LOG_PREFIX} Created DMN: ${parsed.tableName} at ${filePath}`);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({
+      filePath,
+      tableName: parsed.tableName,
+      hitPolicy: parsed.hitPolicy,
+      inputCount: parsed.inputs?.length ?? 1,
+      outputCount: parsed.outputs?.length ?? 1,
+    }) }],
+  };
+}
+
+/**
+ * Escapes special XML characters in a string.
+ */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Stub handler for deploying a BPMN process to Camunda 8 Zeebe.
+ * Returns configuration guidance — actual deployment requires @camunda8/sdk.
+ */
+async function deployProcess(
+  params: Record<string, unknown>
+): Promise<CallToolResult> {
+  const parsed = deployProcessSchema.parse(params);
+  const clusterUrl = parsed.clusterUrl || process.env.ZEEBE_ADDRESS;
+  const clientId = parsed.clientId || process.env.ZEEBE_CLIENT_ID;
+
+  if (!clusterUrl) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'Zeebe cluster not configured',
+        message: 'Set ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, and ZEEBE_CLIENT_SECRET environment variables, or pass clusterUrl/clientId/clientSecret parameters. Install @camunda8/sdk for full deployment support.',
+        requiredEnvVars: ['ZEEBE_ADDRESS', 'ZEEBE_CLIENT_ID', 'ZEEBE_CLIENT_SECRET'],
+      }) }],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [{ type: 'text', text: JSON.stringify({
+      message: 'Deployment not yet implemented — @camunda8/sdk integration planned for a future release.',
+      filePath: parsed.filePath,
+      clusterUrl,
+    }) }],
+  };
+}
+
+/**
  * Dispatches an MCP tool call to the appropriate handler.
  *
  * Local tools (e.g. create_model) execute directly in Node.js.
@@ -254,6 +387,12 @@ export async function dispatch(
 
       case 'add_form_field':
         return await addFormField(params);
+
+      case 'create_dmn':
+        return await createDmn(params);
+
+      case 'deploy_process':
+        return await deployProcess(params);
 
       case 'add_start_event':
       case 'add_task':

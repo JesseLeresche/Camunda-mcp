@@ -154,6 +154,24 @@ export async function startMcpServer(): Promise<void> {
   const host = '127.0.0.1';
   const app = createMcpExpressApp({ host });
 
+  // --- Optional API key authentication ---
+  const apiKey = process.env.MCP_API_KEY;
+  if (apiKey) {
+    app.use('/mcp', (req, res, next) => {
+      const auth = req.headers.authorization;
+      if (!auth || auth !== `Bearer ${apiKey}`) {
+        res.status(401).json({
+          jsonrpc: '2.0',
+          error: { code: -32600, message: 'Unauthorized — set Authorization: Bearer <MCP_API_KEY>' },
+          id: null,
+        });
+        return;
+      }
+      next();
+    });
+    console.log(`${LOG_PREFIX} API key authentication enabled`);
+  }
+
   // POST /mcp — stateless Streamable HTTP transport
   // In stateless mode, we create a new McpServer + transport per request because
   // the SDK's Protocol.connect() throws if already connected to a transport.

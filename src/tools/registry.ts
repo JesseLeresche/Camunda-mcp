@@ -258,6 +258,33 @@ export const addAnnotationSchema = z.object({
   attachToId: z.string().optional().describe('Element ID to associate the annotation with'),
 });
 
+// ---------------------------------------------------------------------------
+// v0.5 schemas
+// ---------------------------------------------------------------------------
+
+export const createDmnSchema = z.object({
+  name: z.string().describe('Name for the DMN file'),
+  tableName: z.string().default('Decision').describe('Decision table name'),
+  hitPolicy: z.enum(['UNIQUE', 'FIRST', 'PRIORITY', 'ANY', 'COLLECT', 'RULE ORDER']).default('UNIQUE'),
+  inputs: z.array(z.object({
+    label: z.string(),
+    expression: z.string().describe('Input expression (e.g. variable name)'),
+    type: z.string().default('string').describe('Type: string, integer, boolean, double, date'),
+  })).optional(),
+  outputs: z.array(z.object({
+    label: z.string(),
+    name: z.string().describe('Output variable name'),
+    type: z.string().default('string'),
+  })).optional(),
+});
+
+export const deployProcessSchema = z.object({
+  filePath: z.string().describe('Path to the .bpmn file to deploy'),
+  clusterUrl: z.string().optional().describe('Zeebe cluster URL (defaults to ZEEBE_ADDRESS env var)'),
+  clientId: z.string().optional().describe('OAuth client ID (defaults to ZEEBE_CLIENT_ID env var)'),
+  clientSecret: z.string().optional().describe('OAuth client secret (defaults to ZEEBE_CLIENT_SECRET env var)'),
+});
+
 /**
  * Describes a single MCP tool exposed by the plugin.
  */
@@ -349,4 +376,7 @@ export const tools: ToolDefinition[] = [
   { name: 'add_end_event_typed', description: 'Places a typed End Event (Error, Escalation, Signal, Message, Terminate) on the canvas.', inputSchema: addEndEventTypedSchema, executeLocal: false },
   { name: 'add_message_flow', description: 'Creates a message flow between elements in different pools.', inputSchema: addMessageFlowSchema, executeLocal: false },
   { name: 'add_annotation', description: 'Adds a text annotation to the diagram, optionally associated with an element.', inputSchema: addAnnotationSchema, executeLocal: false },
+  // v0.5 tools
+  { name: 'create_dmn', description: 'Creates a new DMN decision table file.', inputSchema: createDmnSchema, executeLocal: true },
+  { name: 'deploy_process', description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.', inputSchema: deployProcessSchema, executeLocal: true },
 ];

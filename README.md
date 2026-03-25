@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.4.0**
+**v0.5.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 26 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 28 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Getting Started
 
@@ -85,6 +85,17 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `create_form` | `name`, `fields` (optional array of field definitions) | Creates a new Camunda Form (`.form`) JSON file. Each field has `key`, `label`, `type`, `required`, `description`, and `options` (for select/radio). Returns `{ formId, filePath, fieldCount }`. |
 | `add_form_field` | `formPath`, `key`, `label`, `type` (default `"textfield"`), `required`, `description`, `options` | Adds a field to an existing `.form` file. Supported types: `textfield`, `textarea`, `number`, `checkbox`, `select`, `radio`, `taglist`, `datetime`. Returns `{ fieldId, key, fieldCount }`. |
 | `link_form_to_task` | `diagramId`, `taskId`, `formPath` | Links a Camunda Form to a UserTask in the BPMN model. Auto-detects Camunda 8 (Zeebe) or Camunda 7 (Platform) mode and sets the appropriate extension elements. Returns `{ taskId, formId, mode }`. |
+
+### DMN & Deployment Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `create_dmn` | `name`, `tableName`, `hitPolicy` (UNIQUE/FIRST/etc.), `inputs`, `outputs` | Creates a DMN decision table file with configured inputs, outputs, and hit policy. |
+| `deploy_process` | `filePath`, `clusterUrl`, `clientId`, `clientSecret` | Deploys a BPMN process to Camunda 8 Zeebe. Requires `ZEEBE_ADDRESS`, `ZEEBE_CLIENT_ID`, `ZEEBE_CLIENT_SECRET` env vars. |
+
+### Authentication
+
+Set the `MCP_API_KEY` environment variable to enable Bearer token authentication on the MCP endpoint. When set, all requests must include `Authorization: Bearer <key>`. When unset, no auth (backwards compatible).
 
 ## Prerequisites
 
@@ -194,10 +205,11 @@ camunda-mcp/
 ## Known Limitations
 
 - **`diagramId` is informational only.** Renderer tools operate on the currently active diagram tab regardless of the `diagramId` parameter.
-- **No authentication.** The MCP server binds to `127.0.0.1` (localhost only) with no auth.
+- **Authentication is optional.** Set `MCP_API_KEY` env var to enable Bearer token auth. Without it, the server is open on localhost.
 - **Single-window support.** The renderer bridge targets `BrowserWindow.getAllWindows()[0]`.
 - **Form linking in Camunda 8 mode.** Embedding forms via `zeebe:UserTaskForm` depends on the Modeler's moddle extensions. Falls back to `formId` reference if unavailable.
 - **Port conflicts.** The server retries up to 3 ports. If all are in use, startup fails.
+- **Streaming transport:** The server currently uses stateless Streamable HTTP. Server-Sent Events for real-time diagram change notifications is planned for a future release.
 
 ## Verification / Testing
 
