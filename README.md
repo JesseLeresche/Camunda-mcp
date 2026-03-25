@@ -61,6 +61,27 @@ MCP Client (Claude Code / Copilot)
 | `add_task` | `diagramId`, `type` (default `"bpmn:Task"`), `name`, `x` (default `400`), `y` (default `200`) | Places a BPMN Task on the canvas. Supported types: `bpmn:UserTask`, `bpmn:ServiceTask`, `bpmn:Task`, `bpmn:SendTask`, `bpmn:ReceiveTask`, `bpmn:ScriptTask`, `bpmn:BusinessRuleTask`, `bpmn:ManualTask`. Returns `{ elementId, type, name, x, y }`. |
 | `add_end_event` | `diagramId`, `name`, `x` (default `600`), `y` (default `200`) | Places a BPMN End Event on the canvas. Returns `{ elementId, name, x, y }`. |
 | `connect_elements` | `diagramId`, `sourceId`, `targetId` | Connects two BPMN elements with a sequence flow. Returns `{ connectionId, sourceId, targetId }`. |
+| `add_gateway` | `diagramId`, `type` (default `"bpmn:ExclusiveGateway"`), `name`, `x`, `y` | Places a BPMN Gateway. Types: `bpmn:ExclusiveGateway`, `bpmn:ParallelGateway`, `bpmn:InclusiveGateway`, `bpmn:EventBasedGateway`. |
+| `add_event` | `diagramId`, `type` (`IntermediateCatchEvent` / `IntermediateThrowEvent` / `BoundaryEvent`), `eventDefinitionType` (Timer, Message, Signal, Error, etc. or `"none"`), `name`, `x`, `y`, `attachedToId` (for BoundaryEvent), `cancelActivity`, `timerValue`, `timerType` | Places an Intermediate or Boundary Event with an optional event definition. |
+| `add_subprocess` | `diagramId`, `type` (default `"bpmn:SubProcess"`), `name`, `x`, `y`, `width`, `height`, `collapsed`, `calledElement` (for CallActivity) | Places a SubProcess (expanded/collapsed) or CallActivity. |
+
+### Element Configuration Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `set_properties` | `diagramId`, `elementId`, `name`, `documentation`, `conditionExpression`, `implementationType` (`class` / `delegateExpression` / `expression` / `external` / `connector`), `implementationValue`, `taskTopic`, `taskPriority`, `taskType` (Zeebe job type), `taskRetries`, `isExecutable` | Sets element properties: name, documentation, conditions, and implementation type for Camunda 7 or Camunda 8. |
+| `set_io_mapping` | `diagramId`, `elementId`, `inputs` (array of `{ source, target }`), `outputs` (array of `{ source, target }`) | Sets input/output variable mappings. Supports both Camunda 7 and Camunda 8 formats. |
+| `set_task_headers` | `diagramId`, `elementId`, `headers` (array of `{ key, value }`) | Sets key-value task headers. Camunda 8: `zeebe:TaskHeaders`. Camunda 7: `camunda:Properties`. |
+
+### Diagram Introspection Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `list_elements` | `diagramId`, `typeFilter` (optional, e.g. `"bpmn:Task"`) | Lists all BPMN elements in the current diagram with optional type filter. |
+| `get_element` | `diagramId`, `elementId` | Returns detailed info about a specific element including properties, extensions, and connections. |
+| `delete_element` | `diagramId`, `elementId` | Removes an element from the diagram. |
+| `get_diagram_xml` | `diagramId` | Exports the current diagram as BPMN 2.0 XML. |
+| `import_xml` | `diagramId`, `xml` (string) | Imports/replaces the current diagram from BPMN 2.0 XML. |
 
 ### Camunda Forms Tools
 
@@ -148,7 +169,7 @@ Every tool follows the same pattern across three files:
 
 2. **`src/tools/handlers.ts`** -- Add a `case` to the `dispatch()` switch. Local tools implement their logic here directly. Renderer tools forward via `ipcBridge(toolName, params)`.
 
-3. **`client/bpmn-tools.ts`** -- For renderer tools, add a `case` to `dispatchRendererTool()` and implement the bpmn-js API call using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`.
+3. **`client/bpmn-tools.ts`** -- For renderer tools, add a `case` to `dispatchRendererTool()` and implement the bpmn-js API call using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`.
 
 ## Project Structure
 
@@ -222,13 +243,22 @@ curl -s -X POST http://localhost:3100/mcp \
 | 1 | Open Camunda Desktop Modeler | Plugin loads. HTTP server on port 3100. Plugins menu shows status. |
 | 2 | `create_model` | New empty BPMN diagram tab opens. |
 | 3 | `add_start_event` | Start Event circle appears with label. |
-| 4 | `add_task` (UserTask) | User Task rectangle appears with label. |
-| 5 | `add_task` (ServiceTask) | Service Task rectangle appears with label. |
-| 6 | `add_end_event` | End Event circle appears with label. |
-| 7 | `connect_elements` (x3) | Sequence flow arrows connect all elements. |
-| 8 | `create_form` with fields | `.form` file created with field definitions. |
-| 9 | `link_form_to_task` | Form linked to UserTask (visible in properties panel). |
-| 10 | Save diagram | `.bpmn` XML contains all elements and form reference. |
+| 4 | `add_task` (UserTask, name: "Review Request") | User Task rectangle appears with label. |
+| 5 | `add_gateway` (ExclusiveGateway, name: "Approved?") | Gateway diamond appears with label. |
+| 6 | `add_task` (ServiceTask, name: "Process Order") | Service Task rectangle appears. |
+| 7 | `add_task` (ServiceTask, name: "Send Rejection") | Second Service Task appears. |
+| 8 | `add_end_event` (x2, "Done" and "Rejected") | Two End Events appear. |
+| 9 | `connect_elements` (Start -> UserTask -> Gateway, Gateway -> each branch -> End Events) | Sequence flows connect all elements. |
+| 10 | `set_properties` (conditionExpression on gateway outgoing flows) | Conditions appear on sequence flows in properties panel. |
+| 11 | `set_properties` (taskType: "order-processing" on ServiceTask) | Zeebe job type set on ServiceTask. |
+| 12 | `set_io_mapping` (inputs/outputs on ServiceTask) | I/O mappings visible in properties panel. |
+| 13 | `set_task_headers` (headers on ServiceTask) | Task headers visible in properties panel. |
+| 14 | `create_form` with fields | `.form` file created with field definitions. |
+| 15 | `link_form_to_task` | Form linked to UserTask (visible in properties panel). |
+| 16 | `list_elements` | Returns all elements with correct types. |
+| 17 | `get_element` (on the gateway) | Returns gateway details including connections. |
+| 18 | `get_diagram_xml` | Returns valid BPMN 2.0 XML with all elements and extensions. |
+| 19 | Save diagram | `.bpmn` XML contains all elements, conditions, and form reference. |
 
 ## License
 
