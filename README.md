@@ -16,6 +16,10 @@ The plugin ships with 19 tools covering the full BPMN modeling lifecycle: placin
 
 ## Architecture
 
+![Architecture — ArchiMate layered view](docs/architecture.png)
+
+*Architecture model created with [Archi](https://www.archimatetool.com/) via the [Archi MCP Plugin](https://github.com/tobi/archi-mcp-server).*
+
 The plugin runs across two Electron processes connected by a renderer bridge:
 
 ```
