@@ -59,6 +59,21 @@
         <documentation>list_elements, get_element, delete_element, get_diagram_xml, import_xml</documentation>
       </element>
     </folder>
+    <element xsi:type="archimate:ApplicationComponent" name="AI Coding Assistant" id="id-c195d3401c3040339589e0504b2dba7d">
+      <documentation>External MCP client — Claude Code, GitHub Copilot, Cursor, or any MCP-compatible AI assistant.</documentation>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="MCP Plugin" id="id-fb7303103a7849aa87b5f5d6da6e6e0e">
+      <documentation>The Camunda MCP Plugin — an Electron plugin that exposes 19 BPMN/Forms tools via MCP HTTP protocol.</documentation>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="MCP HTTP Server" id="id-a9ee292f3a7c445ca18cb3de653b952d">
+      <documentation>Express HTTP server on port 3100 handling JSON-RPC 2.0 MCP protocol requests.</documentation>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="Tool Handlers" id="id-fb4351e378c942e1bad94550cb4f098a">
+      <documentation>19 tools — BPMN elements, Camunda Forms, configuration, and introspection. Registered in tools/registry.js, dispatched via tools/handlers.js.</documentation>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="bpmn-js Renderer Module" id="id-b01d5ffcda6f4b1da178de644821a4b9">
+      <documentation>Chromium-side webpack-bundled plugin. Receives IPC commands and calls bpmn-js Modeler API (modeling, elementRegistry, canvas).</documentation>
+    </element>
   </folder>
   <folder name="Technology &amp; Physical" id="id-5bf5306b20934b3b8e2065b0da699a1a" type="technology">
     <element xsi:type="archimate:Node" name="Node.js Main Process" id="id-b0518119225b49f2b6281fc241f64b27">
@@ -75,6 +90,15 @@
     </element>
     <element xsi:type="archimate:TechnologyService" name="HTTP Transport" id="id-55381fbc7b0046b8813f93322b3a8447">
       <documentation>Streamable HTTP transport layer providing the localhost:3100/mcp endpoint for JSON-RPC 2.0 communication.</documentation>
+    </element>
+    <element xsi:type="archimate:Node" name="Node.js / Express" id="id-b13a9086f9844471bd2b9854d280a7fd">
+      <documentation>Node.js runtime running the Express MCP HTTP server in the Electron main process.</documentation>
+    </element>
+    <element xsi:type="archimate:Node" name="Chromium / Electron" id="id-73962b47ef464a549b1f4bf26d9d2e3c">
+      <documentation>Electron's Chromium renderer process hosting the bpmn-js modeler and plugin UI.</documentation>
+    </element>
+    <element xsi:type="archimate:Node" name="npm / webpack" id="id-e222393638f6493ea89dd7a7779efbbe">
+      <documentation>Build tooling — npm for dependency management, webpack for bundling the Chromium-side client module.</documentation>
     </element>
   </folder>
   <folder name="Motivation" id="id-f23935d4ba7248d09944923a1b81aefb" type="motivation"/>
@@ -118,6 +142,14 @@
     <element xsi:type="archimate:AccessRelationship" id="id-a4986391044049cfa2029b2f33b65dd4" source="id-c0d78509c3a74d0cba22021f20ce9b35" target="id-226d33c65a7e453f94cdb13cfc9095df" accessType="1"/>
     <element xsi:type="archimate:AccessRelationship" id="id-2e18f46ff03f49dfa9ed91eff7540a11" source="id-0d4f83efaa6a474b857c7fd7a1b98534" target="id-641d9af7f3004cc79a960f995bba7de0" accessType="2"/>
     <element xsi:type="archimate:ServingRelationship" id="id-891c72290e0f41a898a2565a7bda60a6" source="id-c2509ebcf1614ab9aea90a35401c6380" target="id-5bab562fccdb47c28266c61376efb999"/>
+    <element xsi:type="archimate:ServingRelationship" id="id-22d49f5427fc438c9864c3a77d1c0ae3" source="id-fb7303103a7849aa87b5f5d6da6e6e0e" target="id-c195d3401c3040339589e0504b2dba7d"/>
+    <element xsi:type="archimate:CompositionRelationship" id="id-20df620e04e144059bae192b8f86318f" source="id-fb7303103a7849aa87b5f5d6da6e6e0e" target="id-a9ee292f3a7c445ca18cb3de653b952d"/>
+    <element xsi:type="archimate:CompositionRelationship" id="id-9f7b6a073df5418d8b0f3e1fd01a602e" source="id-fb7303103a7849aa87b5f5d6da6e6e0e" target="id-fb4351e378c942e1bad94550cb4f098a"/>
+    <element xsi:type="archimate:CompositionRelationship" id="id-8767ca2e4d9f46d3b94489087f302916" source="id-fb7303103a7849aa87b5f5d6da6e6e0e" target="id-b01d5ffcda6f4b1da178de644821a4b9"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="id-ce17d79965cd45e7b96dd7c3cdcc1954" source="id-b13a9086f9844471bd2b9854d280a7fd" target="id-a9ee292f3a7c445ca18cb3de653b952d"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="id-86024b677b8e4c7fa65afd5873226844" source="id-73962b47ef464a549b1f4bf26d9d2e3c" target="id-b01d5ffcda6f4b1da178de644821a4b9"/>
+    <element xsi:type="archimate:AssociationRelationship" id="id-6e07e15060fc4ac485be8be14b76579f" source="id-fb7303103a7849aa87b5f5d6da6e6e0e" target="id-e222393638f6493ea89dd7a7779efbbe"/>
+    <element xsi:type="archimate:ServingRelationship" id="id-ece0f18579bf4faf9ebb55d4bfd957c2" source="id-b01d5ffcda6f4b1da178de644821a4b9" target="id-addb0989fb9b46469875164a6830666d"/>
   </folder>
   <folder name="Views" id="id-5c8dce18a39949e3b587febb7d800dc4" type="diagrams">
     <element xsi:type="archimate:ArchimateDiagramModel" name="Camunda MCP Plugin — Layered Architecture" id="id-387efb08795f4eb29556d7cbdde69a0d" connectionRouterType="2">
@@ -287,6 +319,44 @@
         <sourceConnection xsi:type="archimate:Connection" id="id-70ec0fef3e4e49d7858808e4797ad128" source="id-57bf487b74e34cada7424f5cb12c4c1f" target="id-ef960450451e42a79698df8ef9d053ed" archimateRelationship="id-fcafafd45fa349bfaefcc7aaf0678c53"/>
       </child>
       <documentation>Focused application-layer view showing how the Camunda MCP Plugin components compose together. Excludes technology infrastructure and data objects to highlight the internal request flow pipeline: from AI client through MCP server, tool dispatch, and renderer bridge to the bpmn-js module.</documentation>
+    </element>
+    <element xsi:type="archimate:ArchimateDiagramModel" name="Plugin Structure" id="id-cb18c1de7b424c9f897e09619b96391b">
+      <child xsi:type="archimate:DiagramObject" id="id-fe6be7c24c444e0fb2817df0aaed6e32" targetConnections="id-28ea89b02bfc480d95c9887f263f354c" fontColor="#333333" lineColor="#999999" fillColor="#E8E8E8" archimateElement="id-c195d3401c3040339589e0504b2dba7d">
+        <bounds x="60" y="30" width="200" height="55"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-2da531e216794169ba8191725c7cd87d" targetConnections="id-b41975509f4f4aedb31a675c1d8aa125" fontColor="#333333" lineColor="#999999" fillColor="#E8E8E8" archimateElement="id-addb0989fb9b46469875164a6830666d">
+        <bounds x="700" y="30" width="220" height="55"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-c5bf4fcfb04c4abfaa8023623553038f" targetConnections="id-82a7bd6e71a34f5ea88ffe5fd2a01300 id-0e72807c16e04b8d93b49b1b9250f8b0" fontColor="#1A3A5C" lineColor="#5B9BD5" fillColor="#C1DDEF" archimateElement="id-a9ee292f3a7c445ca18cb3de653b952d">
+        <bounds x="60" y="160" width="180" height="55"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-a09e826620a241429fca9e34182d78cf" targetConnections="id-c79066845bd44737bc1e47fc67146a88" fontColor="#1A3A5C" lineColor="#5B9BD5" fillColor="#C1DDEF" archimateElement="id-fb4351e378c942e1bad94550cb4f098a">
+        <bounds x="290" y="160" width="200" height="55"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-7908ac352d4245769d85b3584f6674e8" targetConnections="id-43f6e9c1207a4774a84812bc57e6b344 id-d7ebca2473b14205a217e55ef60cac9b" fontColor="#1A3A5C" lineColor="#5B9BD5" fillColor="#C1DDEF" archimateElement="id-b01d5ffcda6f4b1da178de644821a4b9">
+        <bounds x="540" y="160" width="210" height="55"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-b41975509f4f4aedb31a675c1d8aa125" source="id-7908ac352d4245769d85b3584f6674e8" target="id-2da531e216794169ba8191725c7cd87d" archimateRelationship="id-ece0f18579bf4faf9ebb55d4bfd957c2"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-ae3dc145a1564ef398299b74ec0d2c78" fontColor="#2D6A2E" lineColor="#82B366" fillColor="#D5E8D4" archimateElement="id-b13a9086f9844471bd2b9854d280a7fd">
+        <bounds x="60" y="310" width="180" height="50"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-0e72807c16e04b8d93b49b1b9250f8b0" source="id-ae3dc145a1564ef398299b74ec0d2c78" target="id-c5bf4fcfb04c4abfaa8023623553038f" archimateRelationship="id-ce17d79965cd45e7b96dd7c3cdcc1954"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-0b06d898d3174b6db1409c4e008adb84" targetConnections="id-98be16436960473fa57c7fe39c6ce2c2" fontColor="#2D6A2E" lineColor="#82B366" fillColor="#D5E8D4" archimateElement="id-e222393638f6493ea89dd7a7779efbbe">
+        <bounds x="290" y="310" width="180" height="50"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-f84252520eb64894a99b24f2faebda92" fontColor="#2D6A2E" lineColor="#82B366" fillColor="#D5E8D4" archimateElement="id-73962b47ef464a549b1f4bf26d9d2e3c">
+        <bounds x="540" y="310" width="210" height="50"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-d7ebca2473b14205a217e55ef60cac9b" source="id-f84252520eb64894a99b24f2faebda92" target="id-7908ac352d4245769d85b3584f6674e8" archimateRelationship="id-86024b677b8e4c7fa65afd5873226844"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="id-de3174a445eb4a3ca10f879bbf7b2bf9" fontColor="#FFFFFF" lineWidth="2" lineColor="#0D4F8B" fillColor="#1B65A6" archimateElement="id-fb7303103a7849aa87b5f5d6da6e6e0e">
+        <bounds x="310" y="105" width="160" height="40"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-28ea89b02bfc480d95c9887f263f354c" source="id-de3174a445eb4a3ca10f879bbf7b2bf9" target="id-fe6be7c24c444e0fb2817df0aaed6e32" archimateRelationship="id-22d49f5427fc438c9864c3a77d1c0ae3"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-82a7bd6e71a34f5ea88ffe5fd2a01300" source="id-de3174a445eb4a3ca10f879bbf7b2bf9" target="id-c5bf4fcfb04c4abfaa8023623553038f" archimateRelationship="id-20df620e04e144059bae192b8f86318f"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-c79066845bd44737bc1e47fc67146a88" source="id-de3174a445eb4a3ca10f879bbf7b2bf9" target="id-a09e826620a241429fca9e34182d78cf" archimateRelationship="id-9f7b6a073df5418d8b0f3e1fd01a602e"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-43f6e9c1207a4774a84812bc57e6b344" source="id-de3174a445eb4a3ca10f879bbf7b2bf9" target="id-7908ac352d4245769d85b3584f6674e8" archimateRelationship="id-8767ca2e4d9f46d3b94489087f302916"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-98be16436960473fa57c7fe39c6ce2c2" source="id-de3174a445eb4a3ca10f879bbf7b2bf9" target="id-0b06d898d3174b6db1409c4e008adb84" archimateRelationship="id-6e07e15060fc4ac485be8be14b76579f"/>
+      </child>
+      <documentation>Simple structural overview of the Camunda MCP Plugin — what's in the box. Shows the plugin's internal components, external consumers, and technology underpinning.</documentation>
     </element>
   </folder>
   <purpose>Architecture model for the Camunda Desktop Modeler MCP Plugin — an Electron plugin that exposes an MCP HTTP server so AI coding assistants can create and manipulate BPMN models inside the live Desktop Modeler.</purpose>
