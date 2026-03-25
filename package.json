@@ -1,6 +1,6 @@
 {
   "name": "camunda-modeler-mcp-plugin",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Camunda Desktop Modeler MCP plugin — exposes an MCP HTTP server so AI coding assistants can create and manipulate BPMN models",
   "main": "index.js",
   "scripts": {

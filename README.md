@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.2.0**
+**v0.3.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 19 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 26 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Getting Started
 
@@ -65,6 +65,18 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `delete_element` | `diagramId`, `elementId` | Removes an element from the diagram. |
 | `get_diagram_xml` | `diagramId` | Exports the current diagram as BPMN 2.0 XML. |
 | `import_xml` | `diagramId`, `xml` (string) | Imports/replaces the current diagram from BPMN 2.0 XML. |
+| `move_element` | `diagramId`, `elementId`, `x`, `y` | Moves an element to new center coordinates. |
+| `save_diagram` | `diagramId`, `filePath` | Saves the current diagram as BPMN XML to a file path. |
+
+### Collaboration Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `add_participant` | `diagramId`, `name`, `x`, `y`, `width`, `height` | Adds a pool (bpmn:Participant) for collaboration diagrams. |
+| `add_lane` | `diagramId`, `participantId`, `name` | Adds a lane inside a participant (pool). |
+| `add_message_flow` | `diagramId`, `sourceId`, `targetId`, `name` (optional) | Creates a message flow between elements in different pools. |
+| `add_end_event_typed` | `diagramId`, `eventDefinitionType` (Error, Signal, Message, Terminate, etc.), `name`, `x`, `y` | Places a typed End Event on the canvas. |
+| `add_annotation` | `diagramId`, `text`, `x`, `y`, `attachToId` (optional) | Adds a text annotation, optionally associated with an element. |
 
 ### Camunda Forms Tools
 
