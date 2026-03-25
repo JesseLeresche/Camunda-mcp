@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.1.0**
+**v0.2.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with tools for building complete BPMN workflows (start events, tasks, end events, sequence flows) and creating/editing Camunda Forms with field definitions.
+The plugin ships with 19 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Architecture
 
@@ -34,7 +34,8 @@ MCP Client (Claude Code / Copilot)
 |  bpmn-js Plugin Module   |
 |  McpCommandHandler (DI)  |
 |  modeling, canvas,       |
-|  elementRegistry, moddle |
+|  elementRegistry, moddle,|
+|  injector                |
 +--------------------------+
 ```
 
