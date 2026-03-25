@@ -200,6 +200,64 @@ export const importXmlSchema = z.object({
   xml: z.string().describe('Complete BPMN 2.0 XML to import'),
 });
 
+// ---------------------------------------------------------------------------
+// v0.3 schemas
+// ---------------------------------------------------------------------------
+
+export const moveElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element to move'),
+  x: z.number().describe('New x coordinate (center)'),
+  y: z.number().describe('New y coordinate (center)'),
+});
+
+export const saveDiagramSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  filePath: z.string().describe('Absolute file path to save the .bpmn file to'),
+});
+
+export const addParticipantSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  name: z.string().default('').describe('Pool name'),
+  x: z.number().default(400).describe('Canvas x coordinate'),
+  y: z.number().default(200).describe('Canvas y coordinate'),
+  width: z.number().default(600).describe('Pool width'),
+  height: z.number().default(250).describe('Pool height'),
+});
+
+export const addLaneSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  participantId: z.string().describe('ID of the participant (pool) to add the lane to'),
+  name: z.string().default('').describe('Lane name'),
+});
+
+export const addEndEventTypedSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  eventDefinitionType: z.enum([
+    'bpmn:ErrorEventDefinition', 'bpmn:EscalationEventDefinition',
+    'bpmn:SignalEventDefinition', 'bpmn:MessageEventDefinition',
+    'bpmn:TerminateEventDefinition', 'none',
+  ]).default('none').describe('End event definition type'),
+  name: z.string().default('').describe('Label'),
+  x: z.number().default(600).describe('Canvas x coordinate'),
+  y: z.number().default(200).describe('Canvas y coordinate'),
+});
+
+export const addMessageFlowSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  sourceId: z.string().describe('ID of the source element'),
+  targetId: z.string().describe('ID of the target element'),
+  name: z.string().optional().describe('Label for the message flow'),
+});
+
+export const addAnnotationSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  text: z.string().describe('Annotation text'),
+  x: z.number().default(400).describe('Canvas x coordinate'),
+  y: z.number().default(100).describe('Canvas y coordinate'),
+  attachToId: z.string().optional().describe('Element ID to associate the annotation with'),
+});
+
 /**
  * Describes a single MCP tool exposed by the plugin.
  */
@@ -283,4 +341,12 @@ export const tools: ToolDefinition[] = [
   { name: 'delete_element', description: 'Removes an element from the diagram.', inputSchema: deleteElementSchema, executeLocal: false },
   { name: 'get_diagram_xml', description: 'Exports the current diagram as BPMN 2.0 XML.', inputSchema: getDiagramXmlSchema, executeLocal: false },
   { name: 'import_xml', description: 'Imports/replaces the current diagram from BPMN 2.0 XML.', inputSchema: importXmlSchema, executeLocal: false },
+  // v0.3 tools
+  { name: 'move_element', description: 'Moves an element to new coordinates on the canvas.', inputSchema: moveElementSchema, executeLocal: false },
+  { name: 'save_diagram', description: 'Saves the current diagram as BPMN XML to a file path.', inputSchema: saveDiagramSchema, executeLocal: false },
+  { name: 'add_participant', description: 'Adds a pool (bpmn:Participant) for collaboration diagrams.', inputSchema: addParticipantSchema, executeLocal: false },
+  { name: 'add_lane', description: 'Adds a lane inside a participant (pool).', inputSchema: addLaneSchema, executeLocal: false },
+  { name: 'add_end_event_typed', description: 'Places a typed End Event (Error, Escalation, Signal, Message, Terminate) on the canvas.', inputSchema: addEndEventTypedSchema, executeLocal: false },
+  { name: 'add_message_flow', description: 'Creates a message flow between elements in different pools.', inputSchema: addMessageFlowSchema, executeLocal: false },
+  { name: 'add_annotation', description: 'Adds a text annotation to the diagram, optionally associated with an element.', inputSchema: addAnnotationSchema, executeLocal: false },
 ];

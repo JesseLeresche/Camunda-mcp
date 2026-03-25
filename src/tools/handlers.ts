@@ -8,6 +8,8 @@ import {
   addGatewaySchema, addEventSchema, addSubprocessSchema, setPropertiesSchema,
   setIoMappingSchema, setTaskHeadersSchema, listElementsSchema, getElementSchema,
   deleteElementSchema, getDiagramXmlSchema, importXmlSchema,
+  moveElementSchema, saveDiagramSchema, addParticipantSchema, addLaneSchema,
+  addEndEventTypedSchema, addMessageFlowSchema, addAnnotationSchema,
 } from './registry';
 
 const LOG_PREFIX = '[camunda-mcp]';
@@ -268,7 +270,14 @@ export async function dispatch(
       case 'get_element':
       case 'delete_element':
       case 'get_diagram_xml':
-      case 'import_xml': {
+      case 'import_xml':
+      case 'move_element':
+      case 'save_diagram':
+      case 'add_participant':
+      case 'add_lane':
+      case 'add_end_event_typed':
+      case 'add_message_flow':
+      case 'add_annotation': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -285,6 +294,13 @@ export async function dispatch(
         else if (toolName === 'delete_element') deleteElementSchema.parse(params);
         else if (toolName === 'get_diagram_xml') getDiagramXmlSchema.parse(params);
         else if (toolName === 'import_xml') importXmlSchema.parse(params);
+        else if (toolName === 'move_element') moveElementSchema.parse(params);
+        else if (toolName === 'save_diagram') saveDiagramSchema.parse(params);
+        else if (toolName === 'add_participant') addParticipantSchema.parse(params);
+        else if (toolName === 'add_lane') addLaneSchema.parse(params);
+        else if (toolName === 'add_end_event_typed') addEndEventTypedSchema.parse(params);
+        else if (toolName === 'add_message_flow') addMessageFlowSchema.parse(params);
+        else if (toolName === 'add_annotation') addAnnotationSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it
