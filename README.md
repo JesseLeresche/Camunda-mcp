@@ -8,6 +8,12 @@ This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.
 
 The plugin ships with 19 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
+## Getting Started
+
+![Getting Started — BPMN process for installing and using the plugin](docs/getting-started.png)
+
+*This diagram was built entirely by AI using the plugin itself.*
+
 ## Architecture
 
 The plugin runs across two Electron processes connected by a renderer bridge:
