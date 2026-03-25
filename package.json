@@ -1,15 +1,40 @@
 {
   "name": "camunda-modeler-mcp-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Camunda Desktop Modeler MCP plugin — exposes an MCP HTTP server so AI coding assistants can create and manipulate BPMN models",
   "main": "index.js",
   "scripts": {
     "build": "tsc && webpack --mode production",
-    "dev": "tsc --watch & webpack --mode development --watch"
+    "dev": "tsc --watch & webpack --mode development --watch",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
-  "keywords": ["camunda", "modeler", "mcp", "bpmn", "plugin"],
+  "keywords": [
+    "camunda",
+    "modeler",
+    "mcp",
+    "bpmn",
+    "plugin"
+  ],
   "author": "Jesse Leresche",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JesseLeresche/Camunda-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JesseLeresche/Camunda-mcp/issues"
+  },
+  "homepage": "https://github.com/JesseLeresche/Camunda-mcp#readme",
+  "files": [
+    "index.js",
+    "menu.js",
+    "dist/",
+    "client/dist/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "express": "^4.21.0",
@@ -24,6 +49,7 @@
     "camunda-modeler-webpack-plugin": "^0.2.0",
     "ts-loader": "^9.5.0",
     "typescript": "^5.7.0",
+    "vitest": "^4.1.1",
     "webpack": "^5.97.0",
     "webpack-cli": "^6.0.0"
   }

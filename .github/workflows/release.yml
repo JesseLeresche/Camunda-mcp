@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Package release
+        run: |
+          mkdir -p release/camunda-mcp
+          cp index.js menu.js package.json README.md LICENSE release/camunda-mcp/
+          cp -r dist release/camunda-mcp/
+          mkdir -p release/camunda-mcp/client/dist
+          cp client/dist/client.js release/camunda-mcp/client/dist/
+          cp -r docs release/camunda-mcp/ 2>/dev/null || true
+          cd release/camunda-mcp && npm install --omit=dev --ignore-scripts
+          cd .. && zip -qr camunda-mcp-${{ github.ref_name }}.zip camunda-mcp/
+          tar -czf camunda-mcp-${{ github.ref_name }}.tar.gz camunda-mcp/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/camunda-mcp-${{ github.ref_name }}.zip
+            release/camunda-mcp-${{ github.ref_name }}.tar.gz
+          generate_release_notes: true

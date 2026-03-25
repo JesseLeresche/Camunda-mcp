@@ -1,0 +1,11 @@
+src/
+client/*.ts
+client/types.d.ts
+tsconfig*.json
+webpack.config.js
+*.map
+.github/
+architecture/
+PLAN*.md
+spec.md
+.claude/

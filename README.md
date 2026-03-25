@@ -1,6 +1,6 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.3.0**
+**v0.4.0**
 
 ## Overview
 
