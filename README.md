@@ -16,38 +16,11 @@ The plugin ships with 19 tools covering the full BPMN modeling lifecycle: placin
 
 ## Architecture
 
-![Architecture — ArchiMate layered view](docs/architecture.png)
+![Architecture — Request flow through the two Electron processes](docs/architecture.png)
 
 *Architecture model created with [Archi](https://www.archimatetool.com/) via the [Archi MCP Plugin](https://github.com/tobi/archi-mcp-server).*
 
-The plugin runs across two Electron processes connected by a renderer bridge:
-
-```
-MCP Client (Claude Code / Copilot)
-        |
-        |  HTTP POST (JSON-RPC 2.0)
-        v
-+--------------------------+
-|  Node.js Main Process    |
-|  Express on 127.0.0.1    |
-|  port 3100               |
-|                          |
-|  MCP Server (SDK)        |
-|  Tool Registry (Zod)     |
-+-----------+--------------+
-            |
-            |  webContents.executeJavaScript()
-            |  window.__mcpDispatch()
-            v
-+--------------------------+
-|  Chromium Renderer       |
-|  bpmn-js Plugin Module   |
-|  McpCommandHandler (DI)  |
-|  modeling, canvas,       |
-|  elementRegistry, moddle,|
-|  injector                |
-+--------------------------+
-```
+The plugin runs across two Electron processes connected by a renderer bridge.
 
 **Request lifecycle:**
 
