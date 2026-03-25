@@ -2,18 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## BPMN Modeling Guidelines
+
+**Always read `BPMN-BEST-PRACTICES.md` before creating or modifying any BPMN diagram.** It contains critical rules about coordinate systems, flow routing, and layout patterns that must be followed.
+
+**When the user requests a layout improvement or correction to a BPMN model, update `BPMN-BEST-PRACTICES.md` with the new guideline so it is captured for future use.**
+
 ## Project Overview
 
-Camunda Desktop Modeler MCP plugin — exposes an MCP (Model Context Protocol) HTTP server so AI coding assistants can create and manipulate BPMN models inside the live Desktop Modeler. The architecture mirrors the Archi MCP plugin, adapted for Electron/bpmn-js.
+Camunda Desktop Modeler MCP plugin — exposes an MCP (Model Context Protocol) HTTP server so AI coding assistants can create and manipulate BPMN models inside the live Desktop Modeler.
 
 ## Architecture
 
 Two-process Electron plugin:
 
-- **Node.js main process** (`index.js`, `server.js`, `tools/`): MCP HTTP server on port 3100 (configurable via `MCP_PORT`). Receives JSON-RPC 2.0 tool calls. Some tools (e.g. `create_model`) execute here directly; others are forwarded to the renderer via Electron IPC with a promise-based correlation queue.
-- **Chromium renderer process** (`client/`): Bundled bpmn-js plugin registered via `camunda-modeler-plugin-helpers`. Receives IPC commands, calls bpmn-js Modeler API (`modeling`, `elementRegistry`, `canvas`), returns results via `ipcRenderer`.
+- **Node.js main process** (`index.js`, `dist/`, `menu.js`): MCP HTTP server on port 3100 (configurable via `MCP_PORT`). Receives JSON-RPC 2.0 tool calls. Local tools (e.g. `create_model`, `create_form`, `create_dmn`) execute here directly; renderer tools are forwarded via `webContents.executeJavaScript()`.
+- **Chromium renderer process** (`client/`): Bundled bpmn-js plugin registered via `camunda-modeler-plugin-helpers`. Exposes `window.__mcpDispatch()` which the main process calls. Uses bpmn-js DI injection for `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`.
 
-IPC bridge pattern: main process sends `mcp:command` with a UUID, renderer executes and replies on `mcp:result`. The promise queue in `server.js` correlates responses with a 10s timeout.
+Renderer bridge pattern: main process calls `webContents.executeJavaScript('window.__mcpDispatch(tool, params)')` and awaits the result with a 10s timeout. This bypasses Electron's `contextIsolation` which blocks `ipcRenderer` access.
 
 ## Build Commands
 
