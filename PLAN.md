@@ -1,263 +1,318 @@
-# Camunda Desktop Modeler MCP Plugin — MVP Implementation Plan
+# Camunda MCP Plugin — v0.2 Implementation Plan
 
 ## Context
 
-We need to build a Camunda Desktop Modeler plugin that exposes an MCP HTTP server, allowing AI assistants (Claude Code, Copilot) to create and manipulate BPMN models inside the live Modeler. The MVP validates the full round-trip: MCP client → Node.js HTTP server → Electron IPC → bpmn-js canvas API, by delivering two tools: `create_model` and `add_start_event`.
+v0.1 is complete and tested. It ships 8 tools: `create_model`, `add_start_event`, `add_task`, `add_end_event`, `connect_elements`, `create_form`, `add_form_field`, `link_form_to_task`. The architecture is proven — stateless MCP over Streamable HTTP, renderer bridge via `webContents.executeJavaScript()`, bpmn-js DI with `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`.
 
-**Key decisions:**
-- **Language:** TypeScript (compiled to JS for the plugin runtime)
-- **Build:** npm + webpack (this is a Node.js Electron plugin, not Java)
-- **MCP transport:** Stateless Streamable HTTP (new transport per request, no session management)
-- **MCP SDK:** `@modelcontextprotocol/sdk` with `zod` for input schemas
+v0.2 adds the remaining BPMN element types, element configuration (implementation types, conditions, I/O mappings), and diagram introspection — making the plugin capable of building production-grade BPMN workflows entirely through AI tool calls.
 
 ---
 
-## Tasks (8 items for GitHub Project Kanban)
+## Files to modify (all changes follow the established 3-file pattern)
 
-### Task 1: Project Scaffolding & Build Pipeline
-
-Create `package.json`, `tsconfig.json`, `webpack.config.js`, and directory structure.
-
-**Files:**
-- `package.json` — scripts: `build`, `dev`; dependencies below
-- `tsconfig.json` — target ES2020, module CommonJS for Node.js side; separate config or webpack ts-loader for client
-- `webpack.config.js` — entry `client/client.ts` → output `client/dist/client.js`, using `CamundaModelerWebpackPlugin`, externalize `electron`
-- `client/client.ts` — empty placeholder so webpack compiles
-
-**Dependencies:**
-- `@modelcontextprotocol/sdk`, `express`, `uuid`, `zod` — runtime
-- `camunda-modeler-plugin-helpers` — runtime (client)
-- `camunda-modeler-webpack-plugin`, `webpack`, `webpack-cli`, `ts-loader`, `typescript`, `@types/express`, `@types/uuid` — dev
-
-**Build scripts:**
-```json
-"build": "tsc --project tsconfig.node.json && webpack --mode production",
-"dev": "tsc --project tsconfig.node.json --watch & webpack --mode development --watch"
-```
-
-Two compilation targets:
-1. `tsc` compiles Node.js side (`index.ts`, `server.ts`, `tools/`) → JS in place or `dist/`
-2. `webpack` + `ts-loader` bundles `client/` → `client/dist/client.js` for Chromium
-
-**Verify:** `npm install` succeeds, `npm run build` produces output without errors.
+- `src/tools/registry.ts` — add Zod schemas + ToolDefinition entries
+- `src/tools/handlers.ts` — add dispatch cases (renderer tools just validate + forward)
+- `client/bpmn-tools.ts` — add renderer implementations
 
 ---
 
-### Task 2: Plugin Entry Point & Menu
+## Phase 1: Remaining BPMN Elements (can parallelise all 3 tasks)
 
-Create the files the Camunda Modeler expects to find when loading a plugin.
+### Task 1: Gateways — `add_gateway`
 
-**Files:**
-- `index.ts` — exports `{ name, script, menu }`, calls `startMcpServer()` (stubbed for now)
-- `menu.ts` — exports a function returning a menu item under "Plugins" showing "MCP Server: Starting..."
-
-**Plugin contract:**
+**Schema:**
 ```ts
-module.exports = {
-  name: 'Camunda Modeler MCP Plugin',
-  script: './client/dist/client.js',
-  menu: './menu.js'
-};
-```
-
-**Verify:** Symlink into `~/Library/Application Support/camunda-modeler/resources/plugins/camunda-mcp`, start Modeler, confirm plugin appears in Plugins menu without console errors.
-
----
-
-### Task 3: Tool Registry & Zod Schemas
-
-Define the two MVP tools with Zod input schemas and the Node.js-side `create_model` handler.
-
-**Files:**
-- `tools/registry.ts` — tool definitions with Zod schemas, exported as an array
-- `tools/handlers.ts` — `dispatch()` router + `createModel()` implementation
-
-**Tool definitions (Zod):**
-```ts
-// create_model
-z.object({ name: z.string().optional().describe('Optional diagram name') })
-
-// add_start_event
 z.object({
-  diagramId: z.string().describe('ID returned by create_model'),
-  name: z.string().default('Start').describe('Label for the Start Event'),
-  x: z.number().default(200).describe('Canvas x coordinate'),
-  y: z.number().default(200).describe('Canvas y coordinate'),
+  diagramId: z.string(),
+  type: z.enum([
+    'bpmn:ExclusiveGateway',   // XOR — decision point
+    'bpmn:ParallelGateway',    // AND — parallel split/join
+    'bpmn:InclusiveGateway',   // OR — inclusive split
+    'bpmn:EventBasedGateway',  // event-driven branching
+  ]).default('bpmn:ExclusiveGateway'),
+  name: z.string().default(''),
+  x: z.number().default(400),
+  y: z.number().default(200),
 })
 ```
 
-**`createModel()` implementation:**
-- Generate `diagramId` as `diagram-${Date.now()}`
-- Write minimal valid BPMN XML to `os.tmpdir()/<name>.bpmn`
-- Call `shell.openPath(filePath)` to open in Modeler
-- Return `{ diagramId, message }` wrapped in MCP CallToolResult format
-
-**`dispatch()` router:**
-- Routes `create_model` → local `createModel()`
-- Routes `add_start_event` → IPC bridge (injected, wired in Task 5)
-
-**Verify:** Unit test `createModel()` — assert file written with valid BPMN XML.
+**Renderer:** Same pattern as `addStartEvent` — `modeling.createShape({ type }, { x, y }, rootElement)` + `modeling.updateLabel()`. Default dimensions for gateways are 50x50 (diamond shape — bpmn-js handles this automatically, no explicit width/height needed).
 
 ---
 
-### Task 4: MCP HTTP Server
+### Task 2: Intermediate & Boundary Events — `add_event`
 
-Implement the core MCP server using the SDK with Streamable HTTP transport.
+Generalise event creation into a single `add_event` tool rather than one tool per event type.
 
-**Files:**
-- `server.ts` — `startMcpServer()` function
-
-**Architecture:**
-```
-startMcpServer()
-  → new McpServer({ name: 'camunda-modeler-mcp', version: '0.1.0' })
-  → register tools from registry.ts via server.registerTool()
-  → Express app with POST /mcp endpoint
-  → each request: new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-  → connect server to transport, forward request
-  → listen on process.env.MCP_PORT || 3100, bound to 127.0.0.1
-```
-
-**SDK imports (monolithic v1 package):**
+**Schema:**
 ```ts
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+z.object({
+  diagramId: z.string(),
+  type: z.enum([
+    'bpmn:IntermediateCatchEvent',
+    'bpmn:IntermediateThrowEvent',
+    'bpmn:BoundaryEvent',
+  ]),
+  eventDefinitionType: z.enum([
+    'bpmn:TimerEventDefinition',
+    'bpmn:MessageEventDefinition',
+    'bpmn:SignalEventDefinition',
+    'bpmn:ErrorEventDefinition',
+    'bpmn:EscalationEventDefinition',
+    'bpmn:ConditionalEventDefinition',
+    'bpmn:CompensateEventDefinition',
+    'none',
+  ]).default('none'),
+  name: z.string().default(''),
+  x: z.number().default(400),
+  y: z.number().default(200),
+  // For BoundaryEvent — attach to a host element
+  attachedToId: z.string().optional().describe('Host element ID (required for BoundaryEvent)'),
+  cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
+  // For TimerEventDefinition
+  timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M, 2025-12-31T23:59:59Z)'),
+  timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional(),
+})
 ```
 
-**Port conflict:** Try port, if `EADDRINUSE` try port+1 (max 3 retries). Log actual port.
-
-**Update `index.ts`:** Wire `startMcpServer()` call on plugin load.
-**Update `menu.ts`:** Show "MCP Server: Running (port XXXX)" once started.
-
-**Verify:**
-```bash
-curl -X POST http://localhost:3100/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26"},"id":1}'
-# → returns serverInfo
-
-curl -X POST http://localhost:3100/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
-# → returns create_model and add_start_event
-```
+**Renderer:**
+1. Create shape via `modeling.createShape({ type }, { x, y }, parent)`
+   - For `BoundaryEvent`: parent is the host element (from `attachedToId`), not rootElement
+2. If `eventDefinitionType !== 'none'`: create event definition via `moddle.create(eventDefinitionType, props)` and attach to `shape.businessObject.eventDefinitions`
+3. For timer events: set `timeDuration`, `timeCycle`, or `timeDate` on the TimerEventDefinition
+4. Apply via `modeling.updateProperties()`
 
 ---
 
-### Task 5: IPC Bridge (Main Process)
+### Task 3: Sub-processes — `add_subprocess`
 
-Add the IPC bridge to `server.ts` that forwards renderer-bound tool calls to Chromium.
-
-**Additions to `server.ts`:**
-- `pendingCalls: Map<string, { resolve, reject, timer }>` — correlation queue
-- `dispatchToRenderer(tool, params)` — generates UUID, stores promise, sends `mcp:command` via `BrowserWindow.webContents.send()`, sets 10s timeout
-- `ipcMain.on('mcp:result', ...)` — correlates response by UUID, resolves/rejects, clears timer
-
-**Window discovery:** Use `BrowserWindow.getAllWindows()[0]` lazily at dispatch time (Modeler always has at least one window).
-
-**Error cases:**
-- No active window → reject with "No active Modeler window"
-- Timeout (10s) → reject with "IPC timeout", clean up pending entry
-- `webContents.isDestroyed()` → reject immediately
-
-**Wire into tool registration:** `add_start_event` handler calls `dispatchToRenderer()` instead of local dispatch.
-
-**Verify:** Call `add_start_event` via curl — should timeout with "IPC timeout" (expected until Task 6 wires the renderer side).
-
----
-
-### Task 6: Renderer-Side bpmn-js Plugin & IPC Listener
-
-Implement the client code that closes the IPC loop by calling the bpmn-js modeling API.
-
-**Files:**
-- `client/client.ts` — registers the bpmn-js module via `registerBpmnJSPlugin`
-- `client/bpmn-tools.ts` — bpmn-js module with DI injection + `addStartEvent()` implementation
-
-**bpmn-js module:**
+**Schema:**
 ```ts
-export default {
-  __init__: ['mcpCommandHandler'],
-  mcpCommandHandler: ['type', McpCommandHandler]
-};
-
-function McpCommandHandler(eventBus, modeling, elementRegistry, canvas) {
-  const { ipcRenderer } = require('electron');
-  ipcRenderer.on('mcp:command', async (event, { id, tool, params }) => {
-    try {
-      const result = await dispatch(tool, params, { modeling, elementRegistry, canvas });
-      ipcRenderer.send('mcp:result', { id, result });
-    } catch (err) {
-      ipcRenderer.send('mcp:result', { id, error: err.message });
-    }
-  });
-}
-McpCommandHandler.$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas'];
+z.object({
+  diagramId: z.string(),
+  type: z.enum([
+    'bpmn:SubProcess',
+    'bpmn:CallActivity',
+  ]).default('bpmn:SubProcess'),
+  name: z.string().default(''),
+  x: z.number().default(350),
+  y: z.number().default(150),
+  width: z.number().default(350),
+  height: z.number().default(200),
+  collapsed: z.boolean().default(false),
+  // For CallActivity
+  calledElement: z.string().optional().describe('Process ID to call (for CallActivity)'),
+})
 ```
 
-**`addStartEvent()` implementation:**
+**Renderer:** `modeling.createShape({ type, isExpanded: !collapsed }, { x, y, width, height }, rootElement)`. For CallActivity, set `calledElement` via `modeling.updateProperties()`.
+
+---
+
+## Phase 2: Element Configuration (sequential — each builds on `set_properties`)
+
+### Task 4: Set Properties — `set_properties`
+
+The core configuration tool. Rather than one massive generic tool, use a structured approach with property groups.
+
+**Schema:**
 ```ts
-function addStartEvent(params, { modeling, canvas }) {
-  const rootElement = canvas.getRootElement();
-  const shape = modeling.createShape(
-    { type: 'bpmn:StartEvent', name: params.name },
-    { x: params.x, y: params.y },
-    rootElement
-  );
-  return { elementId: shape.id, x: shape.x, y: shape.y };
-}
+z.object({
+  diagramId: z.string(),
+  elementId: z.string().describe('ID of the element to configure'),
+  // Basic BPMN properties
+  name: z.string().optional(),
+  documentation: z.string().optional(),
+  // Sequence flow condition
+  conditionExpression: z.string().optional().describe('FEEL/JUEL expression for sequence flow conditions'),
+  // Camunda 7 — ServiceTask implementation
+  implementationType: z.enum([
+    'class',              // camunda:class
+    'delegateExpression', // camunda:delegateExpression
+    'expression',         // camunda:expression
+    'external',           // camunda:type=external + camunda:topic
+    'connector',          // camunda:connector
+  ]).optional(),
+  implementationValue: z.string().optional().describe('Class name, expression, or connector ID'),
+  // Camunda 7 — External task
+  taskTopic: z.string().optional().describe('Topic name for external tasks'),
+  taskPriority: z.string().optional(),
+  // Camunda 8 / Zeebe — task definition
+  taskType: z.string().optional().describe('Zeebe job type (e.g. "send-email", "payment-service")'),
+  taskRetries: z.string().optional().default('3').describe('Zeebe retry count'),
+  // Process-level
+  isExecutable: z.boolean().optional(),
+})
 ```
 
-**Webpack:** `electron` is external, `camunda-modeler-plugin-helpers` handled by `CamundaModelerWebpackPlugin`.
-
-**Verify:** `npm run build` succeeds. Load in Modeler, no console errors. Send `add_start_event` — StartEvent appears on canvas.
+**Renderer:**
+1. Get element via `elementRegistry.get(elementId)`
+2. Build properties object from provided fields
+3. For basic props: `modeling.updateProperties(element, { name, documentation })`
+4. For Camunda 7 implementation: detect `moddle.getPackage('camunda')`, then set `camunda:class` / `camunda:delegateExpression` / etc. via `modeling.updateProperties()`
+5. For Zeebe task definition: create `zeebe:TaskDefinition` via `moddle.create()`, attach to extension elements
+6. For conditions on sequence flows: set `conditionExpression` property (create `bpmn:FormalExpression` via moddle if needed)
 
 ---
 
-### Task 7: Error Handling & Hardening
+### Task 5: I/O Mappings — `set_io_mapping`
 
-Harden all layers with proper error handling, logging, and edge cases.
+**Schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  elementId: z.string(),
+  inputs: z.array(z.object({
+    source: z.string().describe('Source expression (Zeebe: FEEL expression prefixed with =)'),
+    target: z.string().describe('Target variable name'),
+  })).optional(),
+  outputs: z.array(z.object({
+    source: z.string(),
+    target: z.string(),
+  })).optional(),
+})
+```
 
-**Areas:**
-1. **Logging:** Consistent `[camunda-mcp]` prefix. Log tool calls, IPC dispatch/response, server start/stop.
-2. **IPC resilience:** Guard duplicate UUID responses, clear timers on response, check `webContents.isDestroyed()`.
-3. **Tool errors:** Handle no diagram open (`canvas.getRootElement()` null), fs write failures, invalid params.
-4. **Graceful shutdown:** Close Express server on Modeler quit (`app.on('before-quit')`).
-5. **`diagramId` note:** For MVP, `add_start_event` operates on the currently active tab regardless of `diagramId`. Document this limitation in the tool description.
-
-**Verify:** Kill Modeler mid-call → error returned, not hang. Start with port 3100 occupied → uses 3101. Call `add_start_event` with no diagram → meaningful error.
+**Renderer:**
+- Camunda 8: Create `zeebe:IoMapping` with `zeebe:Input` / `zeebe:Output` entries via moddle, attach to extension elements
+- Camunda 7: Create `camunda:InputOutput` with `camunda:InputParameter` / `camunda:OutputParameter`
 
 ---
 
-### Task 8: End-to-End Integration Testing
+### Task 6: Task Headers — `set_task_headers`
 
-Validate the complete MVP acceptance criteria from spec Section 9.
-
-**Test sequence:**
-1. Start Modeler → plugin loads, HTTP server on 3100, menu shows "Running"
-2. Claude Code connects → `tools/list` returns both tools
-3. Call `create_model` → new BPMN diagram tab opens
-4. Call `add_start_event` with returned `diagramId` → StartEvent circle appears at (x, y)
-5. Click/drag the element → selectable, moveable, properties panel works
-6. Save file → `.bpmn` XML contains valid `bpmn:StartEvent`
-
-**Also test:**
-- Call `add_start_event` before `create_model` (no diagram) → error
-- Invalid JSON body → proper JSON-RPC error
-- Unknown tool name → error
-- Modeler restart → server comes back up
-
-**Configure `.mcp.json`:**
-```json
-{ "mcpServers": { "camunda-modeler": { "type": "http", "url": "http://localhost:3100/mcp" } } }
+**Schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  elementId: z.string(),
+  headers: z.array(z.object({
+    key: z.string(),
+    value: z.string(),
+  })),
+})
 ```
+
+**Renderer:** Create `zeebe:TaskHeaders` with `zeebe:Header` entries. For Camunda 7, use `camunda:Properties` with `camunda:Property`.
 
 ---
 
-## Task Dependency Order
+## Phase 3: Diagram Introspection & Manipulation (can parallelise all 3)
+
+### Task 7: List Elements — `list_elements`
+
+**Schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  typeFilter: z.string().optional().describe('Filter by BPMN type prefix, e.g. "bpmn:Task" returns all task types'),
+})
+```
+
+**Renderer:** `elementRegistry.getAll()` or `elementRegistry.filter()`, return array of `{ id, type, name, x, y }`. Exclude `bpmndi:*` diagram elements — only return semantic BPMN elements.
+
+---
+
+### Task 8: Get Element Details — `get_element`
+
+**Schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  elementId: z.string(),
+})
+```
+
+**Renderer:** Return comprehensive info: `{ id, type, name, properties, extensionElements, incoming, outgoing, x, y, width, height }`. Extract business object properties and extension element values.
+
+---
+
+### Task 9: Delete Element — `delete_element`
+
+**Schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  elementId: z.string(),
+})
+```
+
+**Renderer:** `modeling.removeElements([elementRegistry.get(elementId)])`. Returns `{ deleted: true, elementId }`.
+
+---
+
+### Task 10: Get/Import Diagram XML — `get_diagram_xml` and `import_xml`
+
+**`get_diagram_xml` schema:**
+```ts
+z.object({ diagramId: z.string() })
+```
+
+**`import_xml` schema:**
+```ts
+z.object({
+  diagramId: z.string(),
+  xml: z.string().describe('Complete BPMN 2.0 XML to import'),
+})
+```
+
+**Renderer challenge:** These need access to the `modeler` instance (not just `modeling`). The modeler provides `saveXML()` and `importXML()`. We may need to add `modeler` or `injector` to the DI injection list, or access it via `eventBus._eventBus` / `canvas._canvas` parent references. Alternative: inject `config.canvas` or use `eventBus` to fire a custom event that the modeler listens for.
+
+**Approach:** Try injecting `injector` (the bpmn-js DI container) which provides `injector.get('modeler')` access. Update `$inject` to include it. If `modeler` isn't injectable, use `canvas._container` to walk up to the modeler instance.
+
+---
+
+## Phase 4: Documentation & Testing
+
+### Task 11: Update README & PLAN.md
+
+- Update Available Tools table with all new tools
+- Add examples for common workflows (gateway branching, service task config, I/O mappings)
+- Update project structure if new files were added
+
+### Task 12: E2E Verification
+
+Test a complex workflow end-to-end:
+1. `create_model` → new diagram
+2. `add_start_event` → "Order Received"
+3. `add_task` (UserTask) → "Review Order"
+4. `add_gateway` (Exclusive) → "Approved?"
+5. `connect_elements` → Start → Review → Gateway
+6. `add_task` (ServiceTask) → "Process Payment"
+7. `add_task` (ServiceTask) → "Send Rejection"
+8. `connect_elements` → Gateway → Payment, Gateway → Rejection
+9. `set_properties` → set condition on "approved" flow
+10. `set_properties` → set Zeebe task type on ServiceTasks
+11. `add_end_event` (x2) → "Order Fulfilled", "Order Rejected"
+12. `connect_elements` → close all flows
+13. `list_elements` → verify all elements present
+14. `get_diagram_xml` → export and validate XML
+
+---
+
+## Task Dependency & Parallelisation
 
 ```
-1 (Scaffolding) → 2 (Entry Point) → 3 (Tool Registry) → 4 (MCP Server) → 5 (IPC Bridge) → 6 (Renderer Plugin) → 7 (Hardening) → 8 (E2E Testing)
+Phase 1 (parallel):  Task 1 (Gateways) | Task 2 (Events) | Task 3 (Sub-processes)
+                              ↓
+Phase 2 (sequential): Task 4 (set_properties) → Task 5 (I/O) → Task 6 (Headers)
+                              ↓
+Phase 3 (parallel):  Task 7 (list) | Task 8 (get) | Task 9 (delete) | Task 10 (XML)
+                              ↓
+Phase 4:             Task 11 (Docs) → Task 12 (E2E)
 ```
 
-Tasks 2 and 3 can run in parallel after Task 1. All others are sequential.
+Phase 1 tasks are fully independent — different element types, no shared code.
+Phase 2 is sequential — Tasks 5 and 6 build on the extension element patterns established in Task 4.
+Phase 3 tasks are independent — all read-only or simple mutations.
+
+---
+
+## Verification
+
+After all tasks complete:
+1. `npm run build` — clean compilation
+2. Restart Modeler — plugin loads, `tools/list` returns all new tools
+3. Run the E2E workflow from Task 12 via curl or Claude Code
+4. Verify in Modeler: elements placed correctly, properties visible in panel, XML export valid
+5. Test cross-version: verify `set_properties` works in both Camunda 7 and Camunda 8 mode

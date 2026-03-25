@@ -95,6 +95,111 @@ export const linkFormToTaskSchema = z.object({
   formPath: z.string().describe('Absolute path to the .form file'),
 });
 
+// ---------------------------------------------------------------------------
+// v0.2 schemas
+// ---------------------------------------------------------------------------
+
+export const addGatewaySchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  type: z.enum(['bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway', 'bpmn:EventBasedGateway'])
+    .default('bpmn:ExclusiveGateway').describe('Gateway type'),
+  name: z.string().default('').describe('Label for the gateway'),
+  x: z.number().default(400).describe('Canvas x coordinate'),
+  y: z.number().default(200).describe('Canvas y coordinate'),
+});
+
+export const addEventSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  type: z.enum(['bpmn:IntermediateCatchEvent', 'bpmn:IntermediateThrowEvent', 'bpmn:BoundaryEvent'])
+    .describe('Event element type'),
+  eventDefinitionType: z.enum([
+    'bpmn:TimerEventDefinition', 'bpmn:MessageEventDefinition', 'bpmn:SignalEventDefinition',
+    'bpmn:ErrorEventDefinition', 'bpmn:EscalationEventDefinition',
+    'bpmn:ConditionalEventDefinition', 'bpmn:CompensateEventDefinition', 'none',
+  ]).default('none').describe('Event definition type'),
+  name: z.string().default('').describe('Label for the event'),
+  x: z.number().default(400).describe('Canvas x coordinate'),
+  y: z.number().default(200).describe('Canvas y coordinate'),
+  attachedToId: z.string().optional().describe('Host element ID (required for BoundaryEvent)'),
+  cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
+  timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
+  timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
+});
+
+export const addSubprocessSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  type: z.enum(['bpmn:SubProcess', 'bpmn:CallActivity']).default('bpmn:SubProcess').describe('Sub-process type'),
+  name: z.string().default('').describe('Label'),
+  x: z.number().default(350).describe('Canvas x coordinate'),
+  y: z.number().default(150).describe('Canvas y coordinate'),
+  width: z.number().default(350).describe('Width'),
+  height: z.number().default(200).describe('Height'),
+  collapsed: z.boolean().default(false).describe('Collapsed sub-process'),
+  calledElement: z.string().optional().describe('Process ID to call (for CallActivity)'),
+});
+
+export const setPropertiesSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element to configure'),
+  name: z.string().optional().describe('Element name'),
+  documentation: z.string().optional().describe('Documentation text'),
+  conditionExpression: z.string().optional().describe('FEEL/JUEL condition for sequence flows'),
+  implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional()
+    .describe('Camunda 7 ServiceTask implementation type'),
+  implementationValue: z.string().optional().describe('Class name, expression, or connector ID'),
+  taskTopic: z.string().optional().describe('External task topic (Camunda 7)'),
+  taskPriority: z.string().optional().describe('Task priority'),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskRetries: z.string().optional().describe('Zeebe retry count'),
+  isExecutable: z.boolean().optional().describe('Process isExecutable flag'),
+});
+
+export const setIoMappingSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element'),
+  inputs: z.array(z.object({
+    source: z.string().describe('Source expression'),
+    target: z.string().describe('Target variable name'),
+  })).optional().describe('Input mappings'),
+  outputs: z.array(z.object({
+    source: z.string().describe('Source expression'),
+    target: z.string().describe('Target variable name'),
+  })).optional().describe('Output mappings'),
+});
+
+export const setTaskHeadersSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element'),
+  headers: z.array(z.object({
+    key: z.string(),
+    value: z.string(),
+  })).describe('Key-value headers'),
+});
+
+export const listElementsSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  typeFilter: z.string().optional().describe('Filter by BPMN type prefix, e.g. "bpmn:Task"'),
+});
+
+export const getElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element'),
+});
+
+export const deleteElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element to delete'),
+});
+
+export const getDiagramXmlSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+});
+
+export const importXmlSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  xml: z.string().describe('Complete BPMN 2.0 XML to import'),
+});
+
 /**
  * Describes a single MCP tool exposed by the plugin.
  */
@@ -166,4 +271,16 @@ export const tools: ToolDefinition[] = [
     inputSchema: linkFormToTaskSchema,
     executeLocal: false,
   },
+  // v0.2 tools
+  { name: 'add_gateway', description: 'Places a BPMN Gateway (Exclusive, Parallel, Inclusive, EventBased) on the canvas.', inputSchema: addGatewaySchema, executeLocal: false },
+  { name: 'add_event', description: 'Places an Intermediate or Boundary Event on the canvas, with optional event definition (Timer, Message, Signal, Error, etc).', inputSchema: addEventSchema, executeLocal: false },
+  { name: 'add_subprocess', description: 'Places a Sub-Process or Call Activity on the canvas.', inputSchema: addSubprocessSchema, executeLocal: false },
+  { name: 'set_properties', description: 'Sets properties on a BPMN element: name, documentation, conditions, implementation type (Camunda 7 class/delegate/external or Camunda 8 Zeebe job type).', inputSchema: setPropertiesSchema, executeLocal: false },
+  { name: 'set_io_mapping', description: 'Sets input/output variable mappings on an element. Supports both Camunda 7 and Camunda 8 formats.', inputSchema: setIoMappingSchema, executeLocal: false },
+  { name: 'set_task_headers', description: 'Sets key-value task headers on an element. Camunda 8: zeebe:TaskHeaders. Camunda 7: camunda:Properties.', inputSchema: setTaskHeadersSchema, executeLocal: false },
+  { name: 'list_elements', description: 'Lists all BPMN elements in the current diagram with optional type filter.', inputSchema: listElementsSchema, executeLocal: false },
+  { name: 'get_element', description: 'Returns detailed information about a specific BPMN element including properties, extensions, and connections.', inputSchema: getElementSchema, executeLocal: false },
+  { name: 'delete_element', description: 'Removes an element from the diagram.', inputSchema: deleteElementSchema, executeLocal: false },
+  { name: 'get_diagram_xml', description: 'Exports the current diagram as BPMN 2.0 XML.', inputSchema: getDiagramXmlSchema, executeLocal: false },
+  { name: 'import_xml', description: 'Imports/replaces the current diagram from BPMN 2.0 XML.', inputSchema: importXmlSchema, executeLocal: false },
 ];

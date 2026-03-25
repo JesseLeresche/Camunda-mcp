@@ -2,7 +2,13 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { z } from 'zod';
-import { createModelSchema, addStartEventSchema, addTaskSchema, addEndEventSchema, connectElementsSchema, createFormSchema, addFormFieldSchema, linkFormToTaskSchema } from './registry';
+import {
+  createModelSchema, addStartEventSchema, addTaskSchema, addEndEventSchema,
+  connectElementsSchema, createFormSchema, addFormFieldSchema, linkFormToTaskSchema,
+  addGatewaySchema, addEventSchema, addSubprocessSchema, setPropertiesSchema,
+  setIoMappingSchema, setTaskHeadersSchema, listElementsSchema, getElementSchema,
+  deleteElementSchema, getDiagramXmlSchema, importXmlSchema,
+} from './registry';
 
 const LOG_PREFIX = '[camunda-mcp]';
 
@@ -251,12 +257,34 @@ export async function dispatch(
       case 'add_task':
       case 'add_end_event':
       case 'connect_elements':
-      case 'link_form_to_task': {
+      case 'link_form_to_task':
+      case 'add_gateway':
+      case 'add_event':
+      case 'add_subprocess':
+      case 'set_properties':
+      case 'set_io_mapping':
+      case 'set_task_headers':
+      case 'list_elements':
+      case 'get_element':
+      case 'delete_element':
+      case 'get_diagram_xml':
+      case 'import_xml': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
         else if (toolName === 'add_end_event') addEndEventSchema.parse(params);
         else if (toolName === 'connect_elements') connectElementsSchema.parse(params);
+        else if (toolName === 'add_gateway') addGatewaySchema.parse(params);
+        else if (toolName === 'add_event') addEventSchema.parse(params);
+        else if (toolName === 'add_subprocess') addSubprocessSchema.parse(params);
+        else if (toolName === 'set_properties') setPropertiesSchema.parse(params);
+        else if (toolName === 'set_io_mapping') setIoMappingSchema.parse(params);
+        else if (toolName === 'set_task_headers') setTaskHeadersSchema.parse(params);
+        else if (toolName === 'list_elements') listElementsSchema.parse(params);
+        else if (toolName === 'get_element') getElementSchema.parse(params);
+        else if (toolName === 'delete_element') deleteElementSchema.parse(params);
+        else if (toolName === 'get_diagram_xml') getDiagramXmlSchema.parse(params);
+        else if (toolName === 'import_xml') importXmlSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it
