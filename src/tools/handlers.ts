@@ -334,6 +334,23 @@ export async function dispatch(
           };
         }
 
+        // save_diagram: renderer returns XML, we write the file on the Node.js side
+        if (toolName === 'save_diagram') {
+          const result = await ipcBridge(toolName, params);
+          try {
+            const resultText = JSON.parse(result.content[0].text);
+            if (resultText.xml && resultText.filePath) {
+              fs.writeFileSync(resultText.filePath, resultText.xml, 'utf-8');
+              return {
+                content: [{ type: 'text', text: JSON.stringify({ saved: true, filePath: resultText.filePath }) }],
+              };
+            }
+          } catch {
+            // If parsing/writing fails, return the original result
+          }
+          return result;
+        }
+
         return await ipcBridge(toolName, params);
       }
 

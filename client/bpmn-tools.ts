@@ -93,6 +93,20 @@ async function dispatchRendererTool(
       return getDiagramXml(params, services);
     case 'import_xml':
       return importXml(params, services);
+    case 'move_element':
+      return moveElement(params, services);
+    case 'save_diagram':
+      return saveDiagram(params, services);
+    case 'add_participant':
+      return addParticipant(params, services);
+    case 'add_lane':
+      return addLane(params, services);
+    case 'add_end_event_typed':
+      return addEndEventTyped(params, services);
+    case 'add_message_flow':
+      return addMessageFlow(params, services);
+    case 'add_annotation':
+      return addAnnotation(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -721,6 +735,188 @@ function debugModdle({ moddle }: BpmnServices) {
     types: (p.types || []).map((t: any) => t.name),
   }));
   return { packages };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Phase 4 (v0.3) — Collaboration, Layout & Advanced Elements        */
+/* ------------------------------------------------------------------ */
+
+function moveElement(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry }: BpmnServices
+) {
+  const elementId = params.elementId as string;
+  const element = elementRegistry.get(elementId);
+  if (!element) throw new Error(`Element "${elementId}" not found`);
+
+  const newX = params.x as number;
+  const newY = params.y as number;
+
+  // Calculate delta from current position
+  // For shapes, element.x/y is top-left. We need to calculate based on center.
+  const currentCenterX = element.x + (element.width || 0) / 2;
+  const currentCenterY = element.y + (element.height || 0) / 2;
+  const deltaX = newX - currentCenterX;
+  const deltaY = newY - currentCenterY;
+
+  modeling.moveElements([element], { x: deltaX, y: deltaY });
+
+  return {
+    elementId,
+    x: element.x,
+    y: element.y,
+    centerX: element.x + (element.width || 0) / 2,
+    centerY: element.y + (element.height || 0) / 2,
+  };
+}
+
+async function saveDiagram(
+  params: Record<string, unknown>,
+  { injector }: BpmnServices
+) {
+  // Renderer side: export the XML. File writing happens on the Node.js side.
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    try {
+      modeler = injector.get('bpmnjs');
+    } catch {
+      throw new Error('Cannot access modeler instance');
+    }
+  }
+  const { xml } = await modeler.saveXML({ format: true });
+  return { xml, filePath: params.filePath };
+}
+
+function addParticipant(
+  params: Record<string, unknown>,
+  { modeling, canvas }: BpmnServices
+) {
+  const name = (params.name as string) || '';
+  const x = (params.x as number) || 400;
+  const y = (params.y as number) || 200;
+  const width = (params.width as number) || 600;
+  const height = (params.height as number) || 250;
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const shape = modeling.createShape(
+    { type: 'bpmn:Participant' },
+    { x, y, width, height },
+    rootElement
+  );
+
+  if (name) modeling.updateLabel(shape, name);
+
+  return {
+    elementId: shape.id,
+    name,
+    x: shape.x,
+    y: shape.y,
+    width: shape.width,
+    height: shape.height,
+  };
+}
+
+function addLane(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry }: BpmnServices
+) {
+  const participantId = params.participantId as string;
+  const name = (params.name as string) || '';
+
+  const participant = elementRegistry.get(participantId);
+  if (!participant) throw new Error(`Participant "${participantId}" not found`);
+
+  // Add lane inside the participant
+  const lane = modeling.addLane(participant, 'bottom');
+
+  if (name && lane) modeling.updateLabel(lane, name);
+
+  return { elementId: lane?.id || 'unknown', name, participantId };
+}
+
+function addEndEventTyped(
+  params: Record<string, unknown>,
+  { modeling, canvas, moddle }: BpmnServices
+) {
+  const eventDefType = (params.eventDefinitionType as string) || 'none';
+  const name = (params.name as string) || '';
+  const x = (params.x as number) || 600;
+  const y = (params.y as number) || 200;
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, rootElement);
+
+  if (eventDefType !== 'none') {
+    const eventDef = moddle.create(eventDefType, {});
+    const bo = shape.businessObject;
+    bo.eventDefinitions = bo.eventDefinitions || [];
+    bo.eventDefinitions.push(eventDef);
+    eventDef.$parent = bo;
+    modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+  }
+
+  if (name) modeling.updateLabel(shape, name);
+
+  return { elementId: shape.id, eventDefinitionType: eventDefType, name, x: shape.x, y: shape.y };
+}
+
+function addMessageFlow(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry }: BpmnServices
+) {
+  const sourceId = params.sourceId as string;
+  const targetId = params.targetId as string;
+  const name = params.name as string | undefined;
+
+  const source = elementRegistry.get(sourceId);
+  if (!source) throw new Error(`Source element "${sourceId}" not found`);
+  const target = elementRegistry.get(targetId);
+  if (!target) throw new Error(`Target element "${targetId}" not found`);
+
+  // Create message flow (cross-pool connection)
+  const connection = modeling.connect(source, target, { type: 'bpmn:MessageFlow' });
+
+  if (name) modeling.updateLabel(connection, name);
+
+  return { connectionId: connection.id, sourceId, targetId, name };
+}
+
+function addAnnotation(
+  params: Record<string, unknown>,
+  { modeling, canvas, elementRegistry }: BpmnServices
+) {
+  const text = params.text as string;
+  const x = (params.x as number) || 400;
+  const y = (params.y as number) || 100;
+  const attachToId = params.attachToId as string | undefined;
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const shape = modeling.createShape(
+    { type: 'bpmn:TextAnnotation' },
+    { x, y },
+    rootElement
+  );
+
+  // Set the annotation text
+  modeling.updateProperties(shape, { text });
+
+  // If attachToId is specified, create an association
+  if (attachToId) {
+    const target = elementRegistry.get(attachToId);
+    if (target) {
+      modeling.connect(shape, target, { type: 'bpmn:Association' });
+    }
+  }
+
+  return { elementId: shape.id, text, x: shape.x, y: shape.y };
 }
 
 const McpCommandModule = {
