@@ -131,7 +131,8 @@ Do **not** use `move_element` to fix layout — it moves the shape but leaves wa
 
 ## Labeling
 
-- **Gateway outgoing flows:** Always label with the condition (use `set_properties` with `name` on the flow ID)
+- **Exclusive gateway flows:** Always label with the condition (e.g., "Approved", "Rejected")
+- **Parallel gateway flows:** Always label each outgoing flow with the stream name (e.g., "Products", "Accounts", "Channels") so readers understand what each parallel branch handles
 - **Tasks:** Use concise 2-line names with `\n` for line breaks (e.g., `"Capture Client\nInformation"`)
 - **Start/End events:** Name the business event, not the technical action (e.g., "Order Received" not "Start Process")
 - **Annotations:** Use for system names, technology references, or SLA information
