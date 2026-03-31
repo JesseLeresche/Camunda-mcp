@@ -1,6 +1,6 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.5.0**
+**v0.6.0**
 
 ## Overview
 
@@ -40,13 +40,13 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `create_model` | `name` (string, optional) | Creates a new empty BPMN diagram. Writes minimal BPMN XML to a temp file and opens it in the Modeler. Returns `{ diagramId, filePath, message }`. |
-| `add_start_event` | `diagramId`, `name` (default `"Start"`), `x` (default `200`), `y` (default `200`) | Places a BPMN Start Event on the canvas. Returns `{ elementId, name, x, y }`. |
-| `add_task` | `diagramId`, `type` (default `"bpmn:Task"`), `name`, `x` (default `400`), `y` (default `200`) | Places a BPMN Task on the canvas. Supported types: `bpmn:UserTask`, `bpmn:ServiceTask`, `bpmn:Task`, `bpmn:SendTask`, `bpmn:ReceiveTask`, `bpmn:ScriptTask`, `bpmn:BusinessRuleTask`, `bpmn:ManualTask`. Returns `{ elementId, type, name, x, y }`. |
-| `add_end_event` | `diagramId`, `name`, `x` (default `600`), `y` (default `200`) | Places a BPMN End Event on the canvas. Returns `{ elementId, name, x, y }`. |
+| `add_start_event` | `diagramId`, `name` (default `"Start"`), `x` (default `200`), `y` (default `200`), `parentId` (optional) | Places a BPMN Start Event on the canvas. Use `parentId` to nest inside an expanded subprocess. Returns `{ elementId, name, x, y }`. |
+| `add_task` | `diagramId`, `type` (default `"bpmn:Task"`), `name`, `x` (default `400`), `y` (default `200`), `parentId` (optional) | Places a BPMN Task on the canvas. Use `parentId` to nest inside an expanded subprocess. Supported types: `bpmn:UserTask`, `bpmn:ServiceTask`, `bpmn:Task`, `bpmn:SendTask`, `bpmn:ReceiveTask`, `bpmn:ScriptTask`, `bpmn:BusinessRuleTask`, `bpmn:ManualTask`. Returns `{ elementId, type, name, x, y }`. |
+| `add_end_event` | `diagramId`, `name`, `x` (default `600`), `y` (default `200`), `parentId` (optional) | Places a BPMN End Event on the canvas. Use `parentId` to nest inside an expanded subprocess. Returns `{ elementId, name, x, y }`. |
 | `connect_elements` | `diagramId`, `sourceId`, `targetId` | Connects two BPMN elements with a sequence flow. Returns `{ connectionId, sourceId, targetId }`. |
-| `add_gateway` | `diagramId`, `type` (default `"bpmn:ExclusiveGateway"`), `name`, `x`, `y` | Places a BPMN Gateway. Types: `bpmn:ExclusiveGateway`, `bpmn:ParallelGateway`, `bpmn:InclusiveGateway`, `bpmn:EventBasedGateway`. |
-| `add_event` | `diagramId`, `type` (`IntermediateCatchEvent` / `IntermediateThrowEvent` / `BoundaryEvent`), `eventDefinitionType` (Timer, Message, Signal, Error, etc. or `"none"`), `name`, `x`, `y`, `attachedToId` (for BoundaryEvent), `cancelActivity`, `timerValue`, `timerType` | Places an Intermediate or Boundary Event with an optional event definition. |
-| `add_subprocess` | `diagramId`, `type` (default `"bpmn:SubProcess"`), `name`, `x`, `y`, `width`, `height`, `collapsed`, `calledElement` (for CallActivity) | Places a SubProcess (expanded/collapsed) or CallActivity. |
+| `add_gateway` | `diagramId`, `type` (default `"bpmn:ExclusiveGateway"`), `name`, `x`, `y`, `parentId` (optional) | Places a BPMN Gateway. Use `parentId` to nest inside an expanded subprocess. Types: `bpmn:ExclusiveGateway`, `bpmn:ParallelGateway`, `bpmn:InclusiveGateway`, `bpmn:EventBasedGateway`. |
+| `add_event` | `diagramId`, `type` (`IntermediateCatchEvent` / `IntermediateThrowEvent` / `BoundaryEvent`), `eventDefinitionType` (Timer, Message, Signal, Error, etc. or `"none"`), `name`, `x`, `y`, `attachedToId` (for BoundaryEvent), `cancelActivity`, `timerValue`, `timerType`, `parentId` (optional) | Places an Intermediate or Boundary Event with an optional event definition. Use `parentId` to nest inside an expanded subprocess (ignored for BoundaryEvent). |
+| `add_subprocess` | `diagramId`, `type` (default `"bpmn:SubProcess"`), `name`, `x`, `y`, `width`, `height`, `collapsed`, `calledElement` (for CallActivity), `parentId` (optional) | Places a SubProcess (expanded/collapsed) or CallActivity. Use `parentId` to nest inside an expanded subprocess. |
 
 ### Element Configuration Tools
 
@@ -75,7 +75,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `add_participant` | `diagramId`, `name`, `x`, `y`, `width`, `height` | Adds a pool (bpmn:Participant) for collaboration diagrams. |
 | `add_lane` | `diagramId`, `participantId`, `name` | Adds a lane inside a participant (pool). |
 | `add_message_flow` | `diagramId`, `sourceId`, `targetId`, `name` (optional) | Creates a message flow between elements in different pools. |
-| `add_end_event_typed` | `diagramId`, `eventDefinitionType` (Error, Signal, Message, Terminate, etc.), `name`, `x`, `y` | Places a typed End Event on the canvas. |
+| `add_end_event_typed` | `diagramId`, `eventDefinitionType` (Error, Signal, Message, Terminate, etc.), `name`, `x`, `y`, `parentId` (optional) | Places a typed End Event on the canvas. Use `parentId` to nest inside an expanded subprocess. |
 | `add_annotation` | `diagramId`, `text`, `x`, `y`, `attachToId` (optional) | Adds a text annotation, optionally associated with an element. |
 
 ### Camunda Forms Tools

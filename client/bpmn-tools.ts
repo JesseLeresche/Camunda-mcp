@@ -55,6 +55,33 @@ function McpCommandHandler(
 
 (McpCommandHandler as any).$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas', 'moddle', 'bpmnFactory', 'injector'];
 
+/**
+ * Resolves the parent element for shape creation.
+ * If parentId is provided, looks it up in the element registry (must be an expanded subprocess).
+ * Otherwise falls back to the canvas root element.
+ */
+function resolveParent(
+  parentId: string | undefined,
+  { elementRegistry, canvas }: Pick<BpmnServices, 'elementRegistry' | 'canvas'>
+) {
+  if (parentId) {
+    const parent = elementRegistry.get(parentId);
+    if (!parent) throw new Error(`Parent element "${parentId}" not found`);
+    const bo = parent.businessObject;
+    if (bo.$type !== 'bpmn:SubProcess') {
+      throw new Error(`Parent "${parentId}" is a ${bo.$type}, not a bpmn:SubProcess`);
+    }
+    const isExpanded = parent.isExpanded ?? bo.di?.isExpanded ?? false;
+    if (!isExpanded) {
+      throw new Error(`Parent subprocess "${parentId}" is collapsed — expand it first`);
+    }
+    return parent;
+  }
+  const root = canvas.getRootElement();
+  if (!root) throw new Error('No diagram is currently open — cannot add elements');
+  return root;
+}
+
 async function dispatchRendererTool(
   tool: string,
   params: Record<string, unknown>,
@@ -116,21 +143,19 @@ async function dispatchRendererTool(
 
 function addStartEvent(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, elementRegistry }: BpmnServices
 ) {
   const name = (params.name as string) || 'Start';
   const x = (params.x as number) || 200;
   const y = (params.y as number) || 200;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) {
-    throw new Error('No diagram is currently open — cannot add elements');
-  }
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
   const shape = modeling.createShape(
     { type: 'bpmn:StartEvent' },
     { x, y },
-    rootElement
+    parent
   );
 
   if (name) {
@@ -142,22 +167,20 @@ function addStartEvent(
 
 function addTask(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, elementRegistry }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:Task';
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
   const y = (params.y as number) || 200;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) {
-    throw new Error('No diagram is currently open — cannot add elements');
-  }
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
   const shape = modeling.createShape(
     { type },
     { x, y, width: 100, height: 80 },
-    rootElement
+    parent
   );
 
   if (name) {
@@ -169,21 +192,19 @@ function addTask(
 
 function addEndEvent(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, elementRegistry }: BpmnServices
 ) {
   const name = (params.name as string) || '';
   const x = (params.x as number) || 600;
   const y = (params.y as number) || 200;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) {
-    throw new Error('No diagram is currently open — cannot add elements');
-  }
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
   const shape = modeling.createShape(
     { type: 'bpmn:EndEvent' },
     { x, y },
-    rootElement
+    parent
   );
 
   if (name) {
@@ -372,17 +393,17 @@ function linkFormCamunda(
 
 function addGateway(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, elementRegistry }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:ExclusiveGateway';
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
   const y = (params.y as number) || 200;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) throw new Error('No diagram is currently open — cannot add elements');
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
-  const shape = modeling.createShape({ type }, { x, y }, rootElement);
+  const shape = modeling.createShape({ type }, { x, y }, parent);
   if (name) modeling.updateLabel(shape, name);
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
@@ -399,6 +420,7 @@ function addEvent(
   const y = (params.y as number) || 200;
   const attachedToId = params.attachedToId as string | undefined;
   const cancelActivity = params.cancelActivity !== false;
+  const parentId = params.parentId as string | undefined;
 
   let parent;
   if (type === 'bpmn:BoundaryEvent') {
@@ -406,8 +428,7 @@ function addEvent(
     parent = elementRegistry.get(attachedToId);
     if (!parent) throw new Error(`Host element "${attachedToId}" not found`);
   } else {
-    parent = canvas.getRootElement();
-    if (!parent) throw new Error('No diagram is currently open — cannot add elements');
+    parent = resolveParent(parentId, { elementRegistry, canvas });
   }
 
   const shapeAttrs: any = { type };
@@ -440,7 +461,7 @@ function addEvent(
 
 function addSubprocess(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, elementRegistry }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:SubProcess';
   const name = (params.name as string) || '';
@@ -450,14 +471,14 @@ function addSubprocess(
   const height = (params.height as number) || 200;
   const collapsed = (params.collapsed as boolean) || false;
   const calledElement = params.calledElement as string | undefined;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) throw new Error('No diagram is currently open — cannot add elements');
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
   const shapeAttrs: any = { type };
   if (type === 'bpmn:SubProcess') shapeAttrs.isExpanded = !collapsed;
 
-  const shape = modeling.createShape(shapeAttrs, { x, y, width, height }, rootElement);
+  const shape = modeling.createShape(shapeAttrs, { x, y, width, height }, parent);
 
   if (calledElement && type === 'bpmn:CallActivity') {
     modeling.updateProperties(shape, { calledElement });
@@ -840,17 +861,17 @@ function addLane(
 
 function addEndEventTyped(
   params: Record<string, unknown>,
-  { modeling, canvas, moddle }: BpmnServices
+  { modeling, canvas, moddle, elementRegistry }: BpmnServices
 ) {
   const eventDefType = (params.eventDefinitionType as string) || 'none';
   const name = (params.name as string) || '';
   const x = (params.x as number) || 600;
   const y = (params.y as number) || 200;
+  const parentId = params.parentId as string | undefined;
 
-  const rootElement = canvas.getRootElement();
-  if (!rootElement) throw new Error('No diagram is currently open');
+  const parent = resolveParent(parentId, { elementRegistry, canvas });
 
-  const shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, rootElement);
+  const shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
 
   if (eventDefType !== 'none') {
     const eventDef = moddle.create(eventDefType, {});

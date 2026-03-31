@@ -17,6 +17,7 @@ export const addStartEventSchema = z.object({
   name: z.string().default('Start').describe('Label for the Start Event'),
   x: z.number().default(200).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 /**
@@ -29,6 +30,7 @@ export const addTaskSchema = z.object({
   name: z.string().default('').describe('Label for the task'),
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 /**
@@ -39,6 +41,7 @@ export const addEndEventSchema = z.object({
   name: z.string().default('').describe('Label for the End Event'),
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 /**
@@ -106,6 +109,7 @@ export const addGatewaySchema = z.object({
   name: z.string().default('').describe('Label for the gateway'),
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 export const addEventSchema = z.object({
@@ -124,6 +128,7 @@ export const addEventSchema = z.object({
   cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
   timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process (ignored for BoundaryEvent)'),
 });
 
 export const addSubprocessSchema = z.object({
@@ -136,6 +141,7 @@ export const addSubprocessSchema = z.object({
   height: z.number().default(200).describe('Height'),
   collapsed: z.boolean().default(false).describe('Collapsed sub-process'),
   calledElement: z.string().optional().describe('Process ID to call (for CallActivity)'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 export const setPropertiesSchema = z.object({
@@ -241,6 +247,7 @@ export const addEndEventTypedSchema = z.object({
   name: z.string().default('').describe('Label'),
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
 });
 
 export const addMessageFlowSchema = z.object({
@@ -310,21 +317,21 @@ export const tools: ToolDefinition[] = [
   {
     name: 'add_start_event',
     description:
-      'Places a BPMN Start Event on the canvas of an open diagram.',
+      'Places a BPMN Start Event on the canvas. Use parentId to nest inside an expanded subprocess.',
     inputSchema: addStartEventSchema,
     executeLocal: false,
   },
   {
     name: 'add_task',
     description:
-      'Places a BPMN Task (UserTask, ServiceTask, etc.) on the canvas of an open diagram.',
+      'Places a BPMN Task (UserTask, ServiceTask, etc.) on the canvas. Use parentId to nest inside an expanded subprocess.',
     inputSchema: addTaskSchema,
     executeLocal: false,
   },
   {
     name: 'add_end_event',
     description:
-      'Places a BPMN End Event on the canvas of an open diagram.',
+      'Places a BPMN End Event on the canvas. Use parentId to nest inside an expanded subprocess.',
     inputSchema: addEndEventSchema,
     executeLocal: false,
   },
@@ -357,9 +364,9 @@ export const tools: ToolDefinition[] = [
     executeLocal: false,
   },
   // v0.2 tools
-  { name: 'add_gateway', description: 'Places a BPMN Gateway (Exclusive, Parallel, Inclusive, EventBased) on the canvas.', inputSchema: addGatewaySchema, executeLocal: false },
-  { name: 'add_event', description: 'Places an Intermediate or Boundary Event on the canvas, with optional event definition (Timer, Message, Signal, Error, etc).', inputSchema: addEventSchema, executeLocal: false },
-  { name: 'add_subprocess', description: 'Places a Sub-Process or Call Activity on the canvas.', inputSchema: addSubprocessSchema, executeLocal: false },
+  { name: 'add_gateway', description: 'Places a BPMN Gateway (Exclusive, Parallel, Inclusive, EventBased) on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addGatewaySchema, executeLocal: false },
+  { name: 'add_event', description: 'Places an Intermediate or Boundary Event on the canvas, with optional event definition (Timer, Message, Signal, Error, etc). Use parentId to nest inside an expanded subprocess.', inputSchema: addEventSchema, executeLocal: false },
+  { name: 'add_subprocess', description: 'Places a Sub-Process or Call Activity on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addSubprocessSchema, executeLocal: false },
   { name: 'set_properties', description: 'Sets properties on a BPMN element: name, documentation, conditions, implementation type (Camunda 7 class/delegate/external or Camunda 8 Zeebe job type).', inputSchema: setPropertiesSchema, executeLocal: false },
   { name: 'set_io_mapping', description: 'Sets input/output variable mappings on an element. Supports both Camunda 7 and Camunda 8 formats.', inputSchema: setIoMappingSchema, executeLocal: false },
   { name: 'set_task_headers', description: 'Sets key-value task headers on an element. Camunda 8: zeebe:TaskHeaders. Camunda 7: camunda:Properties.', inputSchema: setTaskHeadersSchema, executeLocal: false },
@@ -373,7 +380,7 @@ export const tools: ToolDefinition[] = [
   { name: 'save_diagram', description: 'Saves the current diagram as BPMN XML to a file path.', inputSchema: saveDiagramSchema, executeLocal: false },
   { name: 'add_participant', description: 'Adds a pool (bpmn:Participant) for collaboration diagrams.', inputSchema: addParticipantSchema, executeLocal: false },
   { name: 'add_lane', description: 'Adds a lane inside a participant (pool).', inputSchema: addLaneSchema, executeLocal: false },
-  { name: 'add_end_event_typed', description: 'Places a typed End Event (Error, Escalation, Signal, Message, Terminate) on the canvas.', inputSchema: addEndEventTypedSchema, executeLocal: false },
+  { name: 'add_end_event_typed', description: 'Places a typed End Event (Error, Escalation, Signal, Message, Terminate) on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addEndEventTypedSchema, executeLocal: false },
   { name: 'add_message_flow', description: 'Creates a message flow between elements in different pools.', inputSchema: addMessageFlowSchema, executeLocal: false },
   { name: 'add_annotation', description: 'Adds a text annotation to the diagram, optionally associated with an element.', inputSchema: addAnnotationSchema, executeLocal: false },
   // v0.5 tools
