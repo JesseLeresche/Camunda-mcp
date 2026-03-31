@@ -51,6 +51,10 @@ export const connectElementsSchema = z.object({
   diagramId: z.string().describe('ID returned by create_model'),
   sourceId: z.string().describe('ID of the source element'),
   targetId: z.string().describe('ID of the target element'),
+  waypoints: z.array(z.object({
+    x: z.number().describe('X coordinate of the bendpoint'),
+    y: z.number().describe('Y coordinate of the bendpoint'),
+  })).optional().describe('Optional array of {x, y} coordinates defining the connection routing path. Include source and target connection points for full control, or just intermediate bendpoints for L-shaped/orthogonal routing.'),
 });
 
 /**
@@ -338,7 +342,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'connect_elements',
     description:
-      'Connects two BPMN elements with a sequence flow.',
+      'Connects two BPMN elements with a sequence flow. Use waypoints for custom routing (L-shaped, orthogonal).',
     inputSchema: connectElementsSchema,
     executeLocal: false,
   },

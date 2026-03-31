@@ -220,6 +220,7 @@ function connectElements(
 ) {
   const sourceId = params.sourceId as string;
   const targetId = params.targetId as string;
+  const waypoints = params.waypoints as Array<{ x: number; y: number }> | undefined;
 
   const source = elementRegistry.get(sourceId);
   if (!source) {
@@ -231,7 +232,15 @@ function connectElements(
     throw new Error(`Target element "${targetId}" not found`);
   }
 
-  const connection = modeling.connect(source, target);
+  let connection;
+  if (waypoints && waypoints.length > 0) {
+    connection = modeling.createConnection(source, target, {
+      type: 'bpmn:SequenceFlow',
+      waypoints: waypoints.map(wp => ({ x: wp.x, y: wp.y })),
+    }, source.parent);
+  } else {
+    connection = modeling.connect(source, target);
+  }
 
   return { connectionId: connection.id, sourceId, targetId };
 }
