@@ -100,7 +100,7 @@ Set the `MCP_API_KEY` environment variable to enable Bearer token authentication
 ## Prerequisites
 
 - **Camunda Desktop Modeler** v5.x (Electron-based)
-- **Node.js** >= 18
+- **Node.js** >= 20
 - **npm** >= 9
 
 ## Installation
