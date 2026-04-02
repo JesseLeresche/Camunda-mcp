@@ -14,7 +14,7 @@ import {
   resizeElementSchema,
   setFlowWaypointsSchema, autoLayoutSchema, getElementBoundsSchema,
   cloneElementSchema, batchOperationsSchema, addGroupSchema,
-  patchElementSchema, buildProcessSchema,
+  patchElementSchema, buildProcessSchema, validateLayoutSchema,
   listOpenDiagramsSchema, switchDiagramSchema,
 } from './registry';
 
@@ -624,7 +624,8 @@ export async function dispatch(
       case 'batch_operations':
       case 'add_group':
       case 'patch_element':
-      case 'build_process': {
+      case 'build_process':
+      case 'validate_layout': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -656,6 +657,7 @@ export async function dispatch(
         else if (toolName === 'add_group') addGroupSchema.parse(params);
         else if (toolName === 'patch_element') patchElementSchema.parse(params);
         else if (toolName === 'build_process') buildProcessSchema.parse(params);
+        else if (toolName === 'validate_layout') validateLayoutSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it

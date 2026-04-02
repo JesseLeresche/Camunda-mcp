@@ -71,7 +71,7 @@ function resolveParent(
     if (bo.$type !== 'bpmn:SubProcess') {
       throw new Error(`Parent "${parentId}" is a ${bo.$type}, not a bpmn:SubProcess`);
     }
-    const isExpanded = parent.isExpanded ?? bo.di?.isExpanded ?? false;
+    const isExpanded = parent.isExpanded ?? parent.di?.isExpanded ?? false;
     if (!isExpanded) {
       throw new Error(`Parent subprocess "${parentId}" is collapsed — expand it first`);
     }
@@ -80,6 +80,30 @@ function resolveParent(
   const root = canvas.getRootElement();
   if (!root) throw new Error('No diagram is currently open — cannot add elements');
   return root;
+}
+
+/**
+ * Calculates the target position for a boundary event on the host element's perimeter.
+ */
+function getBoundaryPosition(
+  host: any,
+  position: string = 'bottom'
+): { x: number; y: number } {
+  const hx = host.x;
+  const hy = host.y;
+  const hw = host.width || 100;
+  const hh = host.height || 80;
+  switch (position) {
+    case 'bottom':       return { x: hx + hw / 2,    y: hy + hh };
+    case 'bottom-left':  return { x: hx + hw * 0.25, y: hy + hh };
+    case 'bottom-right': return { x: hx + hw * 0.75, y: hy + hh };
+    case 'top':          return { x: hx + hw / 2,    y: hy };
+    case 'top-left':     return { x: hx + hw * 0.25, y: hy };
+    case 'top-right':    return { x: hx + hw * 0.75, y: hy };
+    case 'left':         return { x: hx,             y: hy + hh / 2 };
+    case 'right':        return { x: hx + hw,        y: hy + hh / 2 };
+    default:             return { x: hx + hw / 2,    y: hy + hh };
+  }
 }
 
 async function dispatchRendererTool(
@@ -150,6 +174,8 @@ async function dispatchRendererTool(
       return patchElement(params, services);
     case 'build_process':
       return buildProcess(params, services);
+    case 'validate_layout':
+      return validateLayout(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -459,8 +485,15 @@ function addEvent(
   const shapeAttrs: any = { type };
   if (type === 'bpmn:BoundaryEvent') shapeAttrs.cancelActivity = cancelActivity;
 
+  // For boundary events, compute the position on the host's perimeter
+  let createPos = { x, y };
+  if (type === 'bpmn:BoundaryEvent' && parent) {
+    const boundaryPos = (params.boundaryPosition as string) || 'bottom';
+    createPos = getBoundaryPosition(parent, boundaryPos);
+  }
+
   const shape = modeling.createShape(
-    shapeAttrs, { x, y }, parent,
+    shapeAttrs, createPos, parent,
     { attach: type === 'bpmn:BoundaryEvent' }
   );
 
@@ -855,7 +888,13 @@ function moveElement(
   const deltaX = newX - currentCenterX;
   const deltaY = newY - currentCenterY;
 
-  modeling.moveElements([element], { x: deltaX, y: deltaY });
+  try {
+    modeling.moveElements([element], { x: deltaX, y: deltaY });
+  } catch (err: any) {
+    // bpmn-js may throw on connection layout recalculation (e.g. circle/line intersection)
+    // The move itself usually still succeeds — return the result with a warning
+    console.warn(`[camunda-mcp] moveElement layout warning for ${elementId}:`, err?.message);
+  }
 
   return {
     elementId,
@@ -1042,10 +1081,11 @@ function setFlowWaypoints(
   } else {
     // Direct update: set waypoints and notify diagram-js
     connection.waypoints = newWaypoints;
-    // Update DI waypoints to persist in XML
-    if (bo.di && bo.di.waypoint) {
-      bo.di.waypoint = newWaypoints.map((wp: { x: number; y: number }) => {
-        const point = bo.di.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
+    // Update DI waypoints to persist in XML (di is on the diagram element, not BO)
+    const connDi = connection.di;
+    if (connDi && connDi.waypoint) {
+      connDi.waypoint = newWaypoints.map((wp: { x: number; y: number }) => {
+        const point = connDi.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
         return point;
       });
     }
@@ -1120,7 +1160,7 @@ function cloneElement(
   // Create shape with same type and dimensions
   const shapeAttrs: any = { type: source.type };
   if (bo.$type === 'bpmn:SubProcess') {
-    shapeAttrs.isExpanded = source.isExpanded ?? bo.di?.isExpanded ?? false;
+    shapeAttrs.isExpanded = source.isExpanded ?? source.di?.isExpanded ?? false;
   }
 
   const parent = source.parent || canvas.getRootElement();
@@ -1492,9 +1532,10 @@ async function buildProcess(
       if (!hostId) throw new Error(`BoundaryEvent "${logicalId}" requires attachedToId`);
       const host = elementRegistry.get(hostId);
       if (!host) throw new Error(`Host element "${hostId}" not found for BoundaryEvent`);
+      const boundaryPos = getBoundaryPosition(host, el.boundaryPosition || 'bottom');
       shape = modeling.createShape(
         { type: 'bpmn:BoundaryEvent', host },
-        { x, y },
+        boundaryPos,
         host.parent,
       );
       if (el.cancelActivity === false) {
@@ -1613,6 +1654,478 @@ async function buildProcess(
     elementCount: elements.length,
     flowCount: flowIds.length,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  validate_layout — layout advisory and auto-fix                    */
+/* ------------------------------------------------------------------ */
+
+interface LayoutIssue {
+  severity: 'error' | 'warning' | 'suggestion';
+  type: string;
+  elementIds: string[];
+  message: string;
+  fix?: { tool: string; params: Record<string, unknown> } | null;
+}
+
+interface Rect { x: number; y: number; width: number; height: number }
+
+function elRect(el: any): Rect {
+  return { x: el.x, y: el.y, width: el.width || 0, height: el.height || 0 };
+}
+
+function elCenter(el: any): { x: number; y: number } {
+  return { x: el.x + (el.width || 0) / 2, y: el.y + (el.height || 0) / 2 };
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x
+      && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function isInsideRect(child: Rect, parent: Rect, pad = 0): boolean {
+  return child.x >= parent.x + pad
+      && child.y >= parent.y + pad
+      && child.x + child.width <= parent.x + parent.width - pad
+      && child.y + child.height <= parent.y + parent.height - pad;
+}
+
+function segmentIsOrthogonal(p1: { x: number; y: number }, p2: { x: number; y: number }, tolerance = 3): boolean {
+  return Math.abs(p1.x - p2.x) <= tolerance || Math.abs(p1.y - p2.y) <= tolerance;
+}
+
+/** Check if a line segment intersects a rectangle (simplified AABB test) */
+function segmentIntersectsRect(
+  p1: { x: number; y: number }, p2: { x: number; y: number }, rect: Rect, margin = 5
+): boolean {
+  const minX = Math.min(p1.x, p2.x);
+  const maxX = Math.max(p1.x, p2.x);
+  const minY = Math.min(p1.y, p2.y);
+  const maxY = Math.max(p1.y, p2.y);
+  const r = { x: rect.x + margin, y: rect.y + margin, width: rect.width - margin * 2, height: rect.height - margin * 2 };
+  if (r.width <= 0 || r.height <= 0) return false;
+  // Bounding box overlap check
+  return minX < r.x + r.width && maxX > r.x && minY < r.y + r.height && maxY > r.y;
+}
+
+function elName(el: any): string {
+  return el.businessObject?.name || el.id;
+}
+
+async function validateLayout(
+  params: Record<string, unknown>,
+  services: BpmnServices
+) {
+  const { elementRegistry, modeling } = services;
+  const scopeId = params.elementId as string | undefined;
+  const autoFix = (params.autoFix as boolean) || false;
+  const minSeverity = (params.severity as string) || 'warning';
+
+  const severityOrder: Record<string, number> = { error: 0, warning: 1, suggestion: 2 };
+  const minLevel = severityOrder[minSeverity] ?? 1;
+
+  // Gather shapes and connections within scope
+  const allElements: any[] = elementRegistry.getAll();
+  const shapes = allElements.filter((el: any) => {
+    if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
+    if (el.waypoints) return false; // connections handled separately
+    if (scopeId && el.parent?.id !== scopeId && el.id !== scopeId) return false;
+    return true;
+  });
+  const connections = allElements.filter((el: any) => {
+    if (!el.waypoints) return false;
+    if (scopeId) {
+      const srcInScope = el.source?.parent?.id === scopeId || el.source?.id === scopeId;
+      const tgtInScope = el.target?.parent?.id === scopeId || el.target?.id === scopeId;
+      if (!srcInScope && !tgtInScope) return false;
+    }
+    return true;
+  });
+
+  const issues: LayoutIssue[] = [];
+
+  // ── ERRORS ─────────────────────────────────────────────────────────
+
+  // 1. outside_parent — element outside its parent subprocess/pool bounds
+  //    Skip root process / collaboration — they have no meaningful visual bounds
+  for (const el of shapes) {
+    const parent = el.parent;
+    if (!parent || !parent.width) continue;
+    // Root process and collaboration elements aren't visual containers
+    const parentType = parent.type || parent.businessObject?.$type;
+    if (parentType === 'bpmn:Process' || parentType === 'bpmn:Collaboration') continue;
+    if (el.type === 'bpmn:BoundaryEvent') continue;
+    const cr = elRect(el);
+    const pr = elRect(parent);
+    if (!isInsideRect(cr, pr)) {
+      const cc = elCenter(el);
+      const fixX = Math.max(pr.x + 40, Math.min(cc.x, pr.x + pr.width - 40));
+      const fixY = Math.max(pr.y + 40, Math.min(cc.y, pr.y + pr.height - 40));
+      issues.push({
+        severity: 'error', type: 'outside_parent',
+        elementIds: [el.id],
+        message: `'${elName(el)}' is outside parent '${elName(parent)}'`,
+        fix: { tool: 'move_element', params: { elementId: el.id, x: Math.round(fixX), y: Math.round(fixY) } },
+      });
+    }
+  }
+
+  // 2. overlap — two shapes occupy the same space
+  for (let i = 0; i < shapes.length; i++) {
+    for (let j = i + 1; j < shapes.length; j++) {
+      const a = shapes[i], b = shapes[j];
+      if (!a.width || !b.width) continue;
+      // Skip parent-child pairs (children are inside parent by design)
+      if (a.parent === b || b.parent === a) continue;
+      if (a.type === 'bpmn:BoundaryEvent' || b.type === 'bpmn:BoundaryEvent') continue;
+      const ar = elRect(a), br = elRect(b);
+      if (rectsOverlap(ar, br)) {
+        const bc = elCenter(b);
+        issues.push({
+          severity: 'error', type: 'overlap',
+          elementIds: [a.id, b.id],
+          message: `'${elName(a)}' overlaps with '${elName(b)}'`,
+          fix: { tool: 'move_element', params: { elementId: b.id, x: bc.x + 150, y: bc.y } },
+        });
+      }
+    }
+  }
+
+  // 3. disconnected_flow — waypoints don't connect to source/target edges
+  for (const conn of connections) {
+    const wps = conn.waypoints;
+    if (!wps || wps.length < 2) continue;
+    const src = conn.source, tgt = conn.target;
+    if (!src || !tgt) continue;
+    const srcRect = elRect(src);
+    const tgtRect = elRect(tgt);
+    const firstWp = wps[0];
+    const lastWp = wps[wps.length - 1];
+    const srcDist = distToRect(firstWp, srcRect);
+    const tgtDist = distToRect(lastWp, tgtRect);
+    if (srcDist > 20 || tgtDist > 20) {
+      const srcC = elCenter(src);
+      const tgtC = elCenter(tgt);
+      issues.push({
+        severity: 'error', type: 'disconnected_flow',
+        elementIds: [conn.id],
+        message: `Flow '${elName(conn)}' waypoints don't connect to source/target edges`,
+        fix: { tool: 'set_flow_waypoints', params: {
+          flowId: conn.id,
+          waypoints: [{ x: srcC.x + (srcRect.width || 0) / 2, y: srcC.y }, { x: tgtC.x - (tgtRect.width || 0) / 2, y: tgtC.y }]
+        }},
+      });
+    }
+  }
+
+  // ── WARNINGS ───────────────────────────────────────────────────────
+
+  // 4. diagonal_flow — non-orthogonal segments
+  for (const conn of connections) {
+    const wps = conn.waypoints;
+    if (!wps || wps.length < 2) continue;
+    let hasDiagonal = false;
+    for (let k = 0; k < wps.length - 1; k++) {
+      if (!segmentIsOrthogonal(wps[k], wps[k + 1])) { hasDiagonal = true; break; }
+    }
+    if (hasDiagonal) {
+      // Generate orthogonal routing: from source right edge → target left edge with one bend
+      const src = conn.source, tgt = conn.target;
+      if (!src || !tgt) continue;
+      const srcC = elCenter(src), tgtC = elCenter(tgt);
+      const srcRight = src.x + (src.width || 0);
+      const tgtLeft = tgt.x;
+      const midX = (srcRight + tgtLeft) / 2;
+      issues.push({
+        severity: 'warning', type: 'diagonal_flow',
+        elementIds: [conn.id],
+        message: `Flow from '${elName(src)}' to '${elName(tgt)}' has diagonal routing`,
+        fix: { tool: 'set_flow_waypoints', params: {
+          flowId: conn.id,
+          waypoints: srcC.y === tgtC.y
+            ? [{ x: srcRight, y: srcC.y }, { x: tgtLeft, y: tgtC.y }]
+            : [{ x: srcRight, y: srcC.y }, { x: midX, y: srcC.y }, { x: midX, y: tgtC.y }, { x: tgtLeft, y: tgtC.y }],
+        }},
+      });
+    }
+  }
+
+  // 5. subprocess_too_small — expanded subprocess doesn't contain children
+  for (const el of shapes) {
+    const bo = el.businessObject;
+    if (bo?.$type !== 'bpmn:SubProcess') continue;
+    const isExpanded = el.isExpanded ?? el.di?.isExpanded ?? false;
+    if (!isExpanded) continue;
+    const children = (el.children || []).filter((c: any) => c.type !== 'label' && !c.waypoints);
+    if (children.length === 0) continue;
+    const pr = elRect(el);
+    let allInside = true;
+    for (const child of children) {
+      if (!isInsideRect(elRect(child), pr)) { allInside = false; break; }
+    }
+    if (!allInside) {
+      // Calculate required bounds
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const child of children) {
+        minX = Math.min(minX, child.x);
+        minY = Math.min(minY, child.y);
+        maxX = Math.max(maxX, child.x + (child.width || 36));
+        maxY = Math.max(maxY, child.y + (child.height || 36));
+      }
+      const padding = 50;
+      const newW = Math.max(pr.width, (maxX - minX) + padding * 2);
+      const newH = Math.max(pr.height, (maxY - minY) + padding * 2);
+      issues.push({
+        severity: 'warning', type: 'subprocess_too_small',
+        elementIds: [el.id],
+        message: `Subprocess '${elName(el)}' does not fully contain its children`,
+        fix: { tool: 'resize_element', params: { elementId: el.id, width: Math.ceil(newW), height: Math.ceil(newH) } },
+      });
+    }
+  }
+
+  // 6. flow_crosses_element — a flow routes through an unrelated element
+  for (const conn of connections) {
+    const wps = conn.waypoints;
+    if (!wps || wps.length < 2) continue;
+    const srcId = conn.source?.id, tgtId = conn.target?.id;
+    for (const shape of shapes) {
+      if (!shape.width || shape.id === srcId || shape.id === tgtId) continue;
+      if (shape.parent === conn.source || shape.parent === conn.target) continue;
+      // Skip containers (subprocesses, pools) — flows route through them normally
+      if (shape.businessObject?.$type === 'bpmn:SubProcess' || shape.type === 'bpmn:Participant') continue;
+      const rect = elRect(shape);
+      for (let k = 0; k < wps.length - 1; k++) {
+        if (segmentIntersectsRect(wps[k], wps[k + 1], rect)) {
+          issues.push({
+            severity: 'warning', type: 'flow_crosses_element',
+            elementIds: [conn.id, shape.id],
+            message: `Flow '${elName(conn)}' routes through '${elName(shape)}'`,
+            fix: null,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // 7. label_overlap — flow label overlaps with a shape
+  for (const conn of connections) {
+    const label = conn.label;
+    if (!label || !label.width) continue;
+    const lr = elRect(label);
+    for (const shape of shapes) {
+      if (!shape.width) continue;
+      if (rectsOverlap(lr, elRect(shape))) {
+        issues.push({
+          severity: 'warning', type: 'label_overlap',
+          elementIds: [conn.id, shape.id],
+          message: `Label on flow '${elName(conn)}' overlaps with '${elName(shape)}'`,
+          fix: null,
+        });
+        break;
+      }
+    }
+  }
+
+  // ── SUGGESTIONS ────────────────────────────────────────────────────
+
+  // 8. misaligned — connected elements with nearly-matching y (or x) coordinates
+  const ALIGN_TOLERANCE = 8;
+  for (const conn of connections) {
+    const src = conn.source, tgt = conn.target;
+    if (!src || !tgt || !src.width || !tgt.width) continue;
+    const srcC = elCenter(src), tgtC = elCenter(tgt);
+    const dy = Math.abs(srcC.y - tgtC.y);
+    if (dy > 0 && dy <= ALIGN_TOLERANCE) {
+      const alignY = Math.round((srcC.y + tgtC.y) / 2);
+      issues.push({
+        severity: 'suggestion', type: 'misaligned',
+        elementIds: [src.id, tgt.id],
+        message: `'${elName(src)}' (y=${Math.round(srcC.y)}) and '${elName(tgt)}' (y=${Math.round(tgtC.y)}) should align at y=${alignY}`,
+        fix: { tool: 'batch_operations', params: { diagramId: '', operations: [
+          { tool: 'move_element', params: { elementId: src.id, x: srcC.x, y: alignY } },
+          { tool: 'move_element', params: { elementId: tgt.id, x: tgtC.x, y: alignY } },
+        ]}},
+      });
+    }
+  }
+
+  // 9. cramped — elements less than 30px apart
+  const CRAMPED_THRESHOLD = 30;
+  for (let i = 0; i < shapes.length; i++) {
+    for (let j = i + 1; j < shapes.length; j++) {
+      const a = shapes[i], b = shapes[j];
+      if (!a.width || !b.width) continue;
+      if (a.parent === b || b.parent === a) continue;
+      if (a.parent !== b.parent) continue; // only compare siblings
+      const gap = gapBetween(elRect(a), elRect(b));
+      if (gap >= 0 && gap < CRAMPED_THRESHOLD) {
+        const bc = elCenter(b);
+        const shift = CRAMPED_THRESHOLD - gap + 10;
+        const moveX = bc.x + (b.x >= a.x + (a.width || 0) ? shift : 0);
+        const moveY = bc.y + (b.y >= a.y + (a.height || 0) ? shift : 0);
+        issues.push({
+          severity: 'suggestion', type: 'cramped',
+          elementIds: [a.id, b.id],
+          message: `'${elName(a)}' and '${elName(b)}' are only ${Math.round(gap)}px apart`,
+          fix: { tool: 'move_element', params: { elementId: b.id, x: Math.round(moveX), y: Math.round(moveY) } },
+        });
+      }
+    }
+  }
+
+  // 10. uneven_spacing — sequential elements with inconsistent gaps
+  const SPACING_TOLERANCE = 15;
+  for (const el of shapes) {
+    const outgoing = (el.outgoing || [])
+      .filter((c: any) => c.target && c.target.width)
+      .map((c: any) => c.target);
+    if (outgoing.length < 2) continue;
+    // Sort targets by x position
+    outgoing.sort((a: any, b: any) => a.x - b.x);
+    // Check vertical spacing between branches
+    for (let k = 0; k < outgoing.length - 1; k++) {
+      const t1 = outgoing[k], t2 = outgoing[k + 1];
+      const gap1 = t2.y - (t1.y + (t1.height || 0));
+      // Just report if branches exist but don't have consistent spacing
+      if (outgoing.length >= 2 && k === 0) {
+        const gaps: number[] = [];
+        for (let m = 0; m < outgoing.length - 1; m++) {
+          gaps.push(Math.abs(elCenter(outgoing[m + 1]).y - elCenter(outgoing[m]).y));
+        }
+        const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+        const uneven = gaps.some(g => Math.abs(g - avgGap) > SPACING_TOLERANCE);
+        if (uneven && gaps.length >= 2) {
+          issues.push({
+            severity: 'suggestion', type: 'uneven_spacing',
+            elementIds: outgoing.map((t: any) => t.id),
+            message: `Targets of '${elName(el)}' have uneven vertical spacing`,
+            fix: null,
+          });
+        }
+        break; // Only check once per source element
+      }
+    }
+  }
+
+  // 11. branch_not_fanned — gateway branches all at same y
+  //     Skip loop-back flows (target x <= gateway x)
+  for (const el of shapes) {
+    if (!el.type?.includes('Gateway')) continue;
+    const gwC = elCenter(el);
+    const targets = (el.outgoing || [])
+      .filter((c: any) => c.target && c.target.width)
+      .map((c: any) => c.target)
+      .filter((t: any) => elCenter(t).x > gwC.x); // exclude loop-backs
+    if (targets.length < 2) continue;
+    const ys = targets.map((t: any) => elCenter(t).y);
+    const allSameY = ys.every((y: number) => Math.abs(y - ys[0]) < 5);
+    if (allSameY) {
+      const fanSpacing = 120;
+      const startY = gwC.y - ((targets.length - 1) * fanSpacing) / 2;
+      const ops = targets.map((t: any, idx: number) => ({
+        tool: 'move_element',
+        params: { elementId: t.id, x: elCenter(t).x, y: Math.round(startY + idx * fanSpacing) },
+      }));
+      issues.push({
+        severity: 'suggestion', type: 'branch_not_fanned',
+        elementIds: [el.id, ...targets.map((t: any) => t.id)],
+        message: `Gateway '${elName(el)}' branches all at y=${Math.round(ys[0])} — should fan out vertically`,
+        fix: { tool: 'batch_operations', params: { diagramId: '', operations: ops } },
+      });
+    }
+  }
+
+  // 12. orphaned_annotation — annotation far from its associated element
+  for (const conn of connections) {
+    if (conn.type !== 'bpmn:Association') continue;
+    const annotation = conn.source?.type === 'bpmn:TextAnnotation' ? conn.source : conn.target;
+    const assocEl = conn.source?.type === 'bpmn:TextAnnotation' ? conn.target : conn.source;
+    if (!annotation || !assocEl || !annotation.width || !assocEl.width) continue;
+    const dist = Math.hypot(
+      elCenter(annotation).x - elCenter(assocEl).x,
+      elCenter(annotation).y - elCenter(assocEl).y,
+    );
+    if (dist > 300) {
+      const ac = elCenter(assocEl);
+      issues.push({
+        severity: 'suggestion', type: 'orphaned_annotation',
+        elementIds: [annotation.id, assocEl.id],
+        message: `Annotation '${elName(annotation)}' is ${Math.round(dist)}px from '${elName(assocEl)}'`,
+        fix: { tool: 'move_element', params: { elementId: annotation.id, x: Math.round(ac.x), y: Math.round(ac.y - 80) } },
+      });
+    }
+  }
+
+  // ── FILTER BY SEVERITY ─────────────────────────────────────────────
+
+  const filtered = issues.filter(i => severityOrder[i.severity] <= minLevel);
+
+  // ── AUTO-FIX ───────────────────────────────────────────────────────
+
+  let fixesApplied = 0;
+  if (autoFix) {
+    for (const issue of filtered) {
+      if (!issue.fix) continue;
+      try {
+        const { tool, params: fixParams } = issue.fix;
+        // Validate fix params — skip if any coordinate is null/undefined/NaN
+        if (tool === 'move_element') {
+          if (fixParams.x == null || fixParams.y == null || isNaN(fixParams.x as number) || isNaN(fixParams.y as number)) continue;
+        }
+        if (tool === 'resize_element') {
+          if (fixParams.width == null || fixParams.height == null) continue;
+        }
+        if (tool === 'set_flow_waypoints') {
+          const wps = fixParams.waypoints as any[];
+          if (!wps || wps.some((wp: any) => wp.x == null || wp.y == null)) continue;
+        }
+        if (tool === 'move_element') {
+          moveElement(fixParams, services);
+          fixesApplied++;
+        } else if (tool === 'set_flow_waypoints') {
+          setFlowWaypoints(fixParams, services);
+          fixesApplied++;
+        } else if (tool === 'resize_element') {
+          resizeElement(fixParams, services);
+          fixesApplied++;
+        } else if (tool === 'batch_operations') {
+          const ops = (fixParams.operations as any[]) || [];
+          for (const op of ops) {
+            await dispatchRendererTool(op.tool, op.params, services);
+          }
+          fixesApplied++;
+        }
+      } catch {
+        // Best-effort: skip individual fix failures
+      }
+    }
+  }
+
+  const result: any = {
+    issueCount: filtered.length,
+    issues: filtered,
+  };
+  if (autoFix) {
+    result.fixesApplied = fixesApplied;
+  }
+  return result;
+}
+
+/** Minimum distance from a point to the perimeter of a rectangle */
+function distToRect(p: { x: number; y: number }, rect: Rect): number {
+  const cx = Math.max(rect.x, Math.min(p.x, rect.x + rect.width));
+  const cy = Math.max(rect.y, Math.min(p.y, rect.y + rect.height));
+  return Math.hypot(p.x - cx, p.y - cy);
+}
+
+/** Minimum gap between two non-overlapping rects (0 if touching, negative if overlapping) */
+function gapBetween(a: Rect, b: Rect): number {
+  const dx = Math.max(0, Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width)));
+  const dy = Math.max(0, Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height)));
+  if (dx === 0 && dy === 0) return -1; // overlapping
+  return Math.hypot(dx, dy);
 }
 
 const McpCommandModule = {

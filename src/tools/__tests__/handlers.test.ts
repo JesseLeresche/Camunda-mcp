@@ -337,6 +337,16 @@ describe('dispatch routing', () => {
     expect(payload.error).toBe('IPC bridge not initialized');
   });
 
+  it('returns "IPC bridge not initialized" for validate_layout', async () => {
+    const result = await dispatch('validate_layout', {
+      diagramId: 'test',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toBe('IPC bridge not initialized');
+  });
+
   it('returns "IPC bridge not initialized" for patch_element', async () => {
     const result = await dispatch('patch_element', {
       diagramId: 'test',
@@ -388,8 +398,8 @@ describe('compact flag', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (39)', () => {
-    expect(tools).toHaveLength(39);
+  it('has the expected number of tools (40)', () => {
+    expect(tools).toHaveLength(40);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {

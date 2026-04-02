@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v1.0.0**
+**v1.1.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 39 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 40 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 **Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `patch_element` tool updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `list_elements` tool supports field selection and subprocess filtering.
 
@@ -47,7 +47,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `add_end_event` | `diagramId`, `name`, `x` (default `600`), `y` (default `200`), `parentId` (optional) | Places a BPMN End Event on the canvas. Use `parentId` to nest inside an expanded subprocess. Returns `{ elementId, name, x, y }`. |
 | `connect_elements` | `diagramId`, `sourceId`, `targetId`, `waypoints` (optional array of `{x, y}`) | Connects two BPMN elements with a sequence flow. Use `waypoints` for custom routing (L-shaped, orthogonal). Returns `{ connectionId, sourceId, targetId }`. |
 | `add_gateway` | `diagramId`, `type` (default `"bpmn:ExclusiveGateway"`), `name`, `x`, `y`, `parentId` (optional) | Places a BPMN Gateway. Use `parentId` to nest inside an expanded subprocess. Types: `bpmn:ExclusiveGateway`, `bpmn:ParallelGateway`, `bpmn:InclusiveGateway`, `bpmn:EventBasedGateway`. |
-| `add_event` | `diagramId`, `type` (`IntermediateCatchEvent` / `IntermediateThrowEvent` / `BoundaryEvent`), `eventDefinitionType` (Timer, Message, Signal, Error, etc. or `"none"`), `name`, `x`, `y`, `attachedToId` (for BoundaryEvent), `cancelActivity`, `timerValue`, `timerType`, `parentId` (optional) | Places an Intermediate or Boundary Event with an optional event definition. Use `parentId` to nest inside an expanded subprocess (ignored for BoundaryEvent). |
+| `add_event` | `diagramId`, `type` (`IntermediateCatchEvent` / `IntermediateThrowEvent` / `BoundaryEvent`), `eventDefinitionType` (Timer, Message, Signal, Error, etc. or `"none"`), `name`, `x`, `y`, `attachedToId` (for BoundaryEvent), `cancelActivity`, `boundaryPosition` (`bottom`, `bottom-left`, `bottom-right`, `top`, `left`, `right`), `timerValue`, `timerType`, `parentId` (optional) | Places an Intermediate or Boundary Event with an optional event definition. Boundary events are positioned on the host element's edge via `boundaryPosition` (default `bottom`). |
 | `add_subprocess` | `diagramId`, `type` (default `"bpmn:SubProcess"`), `name`, `x`, `y`, `width`, `height`, `collapsed`, `calledElement` (for CallActivity), `parentId` (optional) | Places a SubProcess (expanded/collapsed) or CallActivity. Use `parentId` to nest inside an expanded subprocess. |
 
 ### Element Configuration Tools
@@ -109,6 +109,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `build_process` | `diagramId`, `elements` (array), `flows` (array, optional), `autoLayout` (default `false`) | Creates an entire process in one call. Elements use friendly type names (`serviceTask`, `exclusiveGateway`, etc.) and logical IDs for cross-referencing. Set `autoLayout=true` to auto-position. Returns `{ idMap }` mapping logical IDs to actual bpmn-js IDs. |
 | `patch_element` | `diagramId`, `elementId`, plus any of: `name`, `documentation`, `conditionExpression`, `waypoints`, `x`, `y`, `taskType`, implementation props | Updates any combination of properties on a BPMN element in one call. Superset of `set_properties` + `set_flow_waypoints` + `move_element`. |
 | `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple tool operations in sequence. Use `"$ref:N"` in params to reference the elementId/connectionId from operation at index N. |
+| `validate_layout` | `diagramId`, `elementId` (optional — scope to subprocess), `autoFix` (default `false`), `severity` (default `"warning"`) | Detects layout issues (overlaps, diagonal flows, misalignment, cramped elements, subprocess bounds) and generates actionable fixes. Set `autoFix=true` to apply all fixes automatically. |
 | `compact: true` | *(flag on any tool)* | Any tool call can include `compact: true` to strip the response to essential IDs and status fields only, reducing token usage by ~80%. |
 
 ### Tab Management Tools

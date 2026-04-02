@@ -130,6 +130,7 @@ export const addEventSchema = z.object({
   y: z.number().default(200).describe('Canvas y coordinate'),
   attachedToId: z.string().optional().describe('Host element ID (required for BoundaryEvent)'),
   cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
+  boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).default('bottom').describe('Where to place the boundary event on the host element edge'),
   timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process (ignored for BoundaryEvent)'),
@@ -383,6 +384,7 @@ export const buildProcessSchema = z.object({
     eventDefinitionType: z.string().optional().describe('Event definition type for intermediate/boundary events'),
     attachedToId: z.string().optional().describe('Logical ID of host element for BoundaryEvent'),
     cancelActivity: z.boolean().optional().describe('Interrupting boundary event (default true)'),
+    boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('Where to place boundary event on host edge (default bottom)'),
   })).describe('Elements to create'),
   flows: z.array(z.object({
     from: z.string().describe('Logical ID of source element'),
@@ -392,6 +394,13 @@ export const buildProcessSchema = z.object({
     waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
   })).optional().describe('Sequence flows to create between elements'),
   autoLayout: z.boolean().default(false).describe('Apply Modeler auto-layout after building'),
+});
+
+export const validateLayoutSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().optional().describe('Scope validation to a specific subprocess. If omitted, validates the entire diagram.'),
+  autoFix: z.boolean().default(false).describe('Automatically apply all generated fixes instead of just reporting them'),
+  severity: z.enum(['error', 'warning', 'suggestion']).default('warning').describe('Minimum severity to return'),
 });
 
 export const patchElementSchema = z.object({
@@ -529,6 +538,7 @@ export const tools: ToolDefinition[] = [
   { name: 'add_group', description: 'Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics.', inputSchema: addGroupSchema, executeLocal: false },
   { name: 'patch_element', description: 'Updates any combination of properties on a BPMN element in one call: name, documentation, conditions, implementation, waypoints, position. Superset of set_properties + set_flow_waypoints + move_element.', inputSchema: patchElementSchema, executeLocal: false },
   { name: 'build_process', description: 'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position.', inputSchema: buildProcessSchema, executeLocal: false },
+  { name: 'validate_layout', description: 'Detects layout issues (overlaps, diagonal flows, misalignment, cramped elements, subprocess bounds) and generates actionable fixes. Set autoFix=true to apply all fixes automatically.', inputSchema: validateLayoutSchema, executeLocal: false },
   // tab management
   { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
   { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },

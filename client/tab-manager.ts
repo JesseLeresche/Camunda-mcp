@@ -151,10 +151,27 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     };
   }
 
-  private async autoLayout(): Promise<{ applied: boolean }> {
+  private async autoLayout(): Promise<{ applied: boolean; action?: string; error?: string }> {
     const { triggerAction } = this.props;
-    await triggerAction('format-bpmn-diagram');
-    return { applied: true };
+    // The action name varies by Camunda Modeler version — try known names
+    const actionNames = [
+      'formatProcessApplication',
+      'format-bpmn-diagram',
+      'editor.format',
+    ];
+    for (const action of actionNames) {
+      try {
+        await triggerAction(action);
+        console.log(`${LOG_PREFIX} Auto-layout applied via action '${action}'`);
+        return { applied: true, action };
+      } catch {
+        // Try next action name
+      }
+    }
+    return {
+      applied: false,
+      error: `Auto-layout not available — none of the known actions [${actionNames.join(', ')}] are registered in this Modeler version`,
+    };
   }
 
   render() {
