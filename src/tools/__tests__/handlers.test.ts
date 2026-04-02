@@ -302,6 +302,30 @@ describe('dispatch routing', () => {
     expect(payload.error).toBe('IPC bridge not initialized');
   });
 
+  it('returns error for list_open_diagrams when Electron is not available', async () => {
+    const result = await dispatch('list_open_diagrams', {});
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain('Electron BrowserWindow not available');
+  });
+
+  it('returns error for switch_diagram when no identifier is provided', async () => {
+    const result = await dispatch('switch_diagram', {});
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain('At least one of diagramId, filePath, or name must be provided');
+  });
+
+  it('returns error for switch_diagram when Electron is not available', async () => {
+    const result = await dispatch('switch_diagram', { name: 'test' });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain('Electron BrowserWindow not available');
+  });
+
   it('returns a Zod validation error when required params are missing', async () => {
     // create_form requires 'name' — passing empty object should fail validation
     const result = await dispatch('create_form', {});
@@ -317,8 +341,8 @@ describe('dispatch routing', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (28)', () => {
-    expect(tools).toHaveLength(28);
+  it('has the expected number of tools (30)', () => {
+    expect(tools).toHaveLength(30);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {
@@ -337,11 +361,14 @@ describe('tools registry', () => {
     }
   });
 
-  it('local tools are create_model, create_form, add_form_field, create_dmn, deploy_process', () => {
+  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, list_open_diagrams, switch_diagram', () => {
     const localTools = tools.filter(t => t.executeLocal).map(t => t.name);
     expect(localTools).toEqual(
-      expect.arrayContaining(['create_model', 'create_form', 'add_form_field', 'create_dmn', 'deploy_process'])
+      expect.arrayContaining([
+        'create_model', 'create_form', 'add_form_field', 'create_dmn', 'deploy_process',
+        'list_open_diagrams', 'switch_diagram',
+      ])
     );
-    expect(localTools).toHaveLength(5);
+    expect(localTools).toHaveLength(7);
   });
 });

@@ -8,5 +8,6 @@
  */
 import { registerBpmnJSPlugin } from 'camunda-modeler-plugin-helpers';
 import McpCommandModule from './bpmn-tools';
+import './tab-manager'; // Side-effect: registers client extension for tab management
 
 registerBpmnJSPlugin(McpCommandModule);

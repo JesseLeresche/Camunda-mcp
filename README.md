@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.7.0**
+**v0.8.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 28 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 30 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Getting Started
 
@@ -92,6 +92,13 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 |------|-----------|-------------|
 | `create_dmn` | `name`, `tableName`, `hitPolicy` (UNIQUE/FIRST/etc.), `inputs`, `outputs` | Creates a DMN decision table file with configured inputs, outputs, and hit policy. |
 | `deploy_process` | `filePath`, `clusterUrl`, `clientId`, `clientSecret` | Deploys a BPMN process to Camunda 8 Zeebe. Requires `ZEEBE_ADDRESS`, `ZEEBE_CLIENT_ID`, `ZEEBE_CLIENT_SECRET` env vars. |
+
+### Tab Management Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `list_open_diagrams` | *(none)* | Lists all open diagram tabs with their IDs, names, types, file paths, and active status. Tabs are discovered as they become active. |
+| `switch_diagram` | `diagramId` (optional), `filePath` (optional), `name` (optional, partial match) | Switches to a specific diagram tab. At least one parameter required. Returns an error listing matches if multiple tabs match, or known tabs if none match. |
 
 ### Authentication
 
@@ -194,9 +201,10 @@ camunda-mcp/
 │       ├── registry.ts             # Tool definitions with Zod input schemas
 │       └── handlers.ts             # Dispatch router + local tool handlers (createModel, createForm, addFormField)
 ├── client/
-│   ├── client.ts                   # Renderer entry: registers bpmn-js plugin
+│   ├── client.ts                   # Renderer entry: registers bpmn-js plugin + tab manager
 │   ├── bpmn-tools.ts               # bpmn-js DI module, renderer tool implementations
-│   ├── types.d.ts                  # Type declarations for camunda-modeler-plugin-helpers
+│   ├── tab-manager.ts              # Client extension for tab tracking and switching
+│   ├── types.d.ts                  # Type declarations for camunda-modeler-plugin-helpers + React
 │   └── dist/
 │       └── client.js               # Webpack output (generated, not checked in)
 └── dist/                           # tsc output (generated, not checked in)
@@ -204,7 +212,8 @@ camunda-mcp/
 
 ## Known Limitations
 
-- **`diagramId` is informational only.** Renderer tools operate on the currently active diagram tab regardless of the `diagramId` parameter.
+- **`diagramId` is informational only.** Renderer tools operate on the currently active diagram tab regardless of the `diagramId` parameter. Use `switch_diagram` to activate the correct tab before calling renderer tools.
+- **Tab discovery is incremental.** `list_open_diagrams` only returns tabs that have been focused at least once since the plugin loaded. Switch to a tab to register it.
 - **Authentication is optional.** Set `MCP_API_KEY` env var to enable Bearer token auth. Without it, the server is open on localhost.
 - **Single-window support.** The renderer bridge targets `BrowserWindow.getAllWindows()[0]`.
 - **Form linking in Camunda 8 mode.** Embedding forms via `zeebe:UserTaskForm` depends on the Modeler's moddle extensions. Falls back to `formId` reference if unavailable.

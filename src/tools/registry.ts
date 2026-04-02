@@ -296,6 +296,18 @@ export const deployProcessSchema = z.object({
   clientSecret: z.string().optional().describe('OAuth client secret (defaults to ZEEBE_CLIENT_SECRET env var)'),
 });
 
+// ---------------------------------------------------------------------------
+// Tab management schemas
+// ---------------------------------------------------------------------------
+
+export const listOpenDiagramsSchema = z.object({});
+
+export const switchDiagramSchema = z.object({
+  diagramId: z.string().optional().describe('Tab ID to switch to (as returned by list_open_diagrams)'),
+  filePath: z.string().optional().describe('File path of the .bpmn file'),
+  name: z.string().optional().describe('Diagram name (partial match, case-insensitive)'),
+});
+
 /**
  * Describes a single MCP tool exposed by the plugin.
  */
@@ -390,4 +402,7 @@ export const tools: ToolDefinition[] = [
   // v0.5 tools
   { name: 'create_dmn', description: 'Creates a new DMN decision table file.', inputSchema: createDmnSchema, executeLocal: true },
   { name: 'deploy_process', description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.', inputSchema: deployProcessSchema, executeLocal: true },
+  // v0.8 tools — tab management
+  { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
+  { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },
 ];
