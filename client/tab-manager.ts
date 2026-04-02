@@ -45,6 +45,7 @@ declare global {
         name: string;
         filePath?: string;
       }>;
+      autoLayout: () => Promise<{ applied: boolean }>;
     };
   }
 }
@@ -70,6 +71,7 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     window.__mcpTabManager = {
       listTabs: () => this.listTabs(),
       switchTab: (params) => this.switchTab(params),
+      autoLayout: () => this.autoLayout(),
     };
 
     console.log(`${LOG_PREFIX} Tab manager initialized`);
@@ -147,6 +149,12 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
       name: target.name || target.title || 'Untitled',
       filePath: target.file?.path,
     };
+  }
+
+  private async autoLayout(): Promise<{ applied: boolean }> {
+    const { triggerAction } = this.props;
+    await triggerAction('format-bpmn-diagram');
+    return { applied: true };
   }
 
   render() {

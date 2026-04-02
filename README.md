@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.9.0**
+**v0.10.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 31 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 37 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Getting Started
 
@@ -67,6 +67,11 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `import_xml` | `diagramId`, `xml` (string) | Imports/replaces the current diagram from BPMN 2.0 XML. |
 | `move_element` | `diagramId`, `elementId`, `x`, `y` | Moves an element to new center coordinates. |
 | `resize_element` | `diagramId`, `elementId`, `width`, `height` | Resizes a shape (expanded subprocess, pool, lane, etc.) to the given dimensions. The element center stays fixed. |
+| `set_flow_waypoints` | `diagramId`, `flowId`, `waypoints` (array of `{x, y}`, min 2) | Replaces the visual waypoints on an existing sequence/message flow without modifying source, target, name, conditions, or extensions. |
+| `get_element_bounds` | `diagramId`, `elementId` | Returns exact rendered bounds, center, edge connection points (top/bottom/left/right midpoints), and waypoints (for flows). |
+| `clone_element` | `diagramId`, `sourceId`, `name` (optional), `x`, `y`, `deep` (default `false`) | Clones an element with all its properties and extensions. Use `deep=true` for expanded subprocesses to also clone children and internal flows. |
+| `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple tool operations in sequence. Use `"$ref:N"` in params to reference the elementId/connectionId from operation at index N. |
+| `auto_layout` | `diagramId` | Applies the Modeler's built-in auto-layout to reposition all shapes and re-route all connections for clean rendering. |
 | `save_diagram` | `diagramId`, `filePath` | Saves the current diagram as BPMN XML to a file path. |
 
 ### Collaboration Tools
@@ -78,6 +83,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `add_message_flow` | `diagramId`, `sourceId`, `targetId`, `name` (optional) | Creates a message flow between elements in different pools. |
 | `add_end_event_typed` | `diagramId`, `eventDefinitionType` (Error, Signal, Message, Terminate, etc.), `name`, `x`, `y`, `parentId` (optional) | Places a typed End Event on the canvas. Use `parentId` to nest inside an expanded subprocess. |
 | `add_annotation` | `diagramId`, `text`, `x`, `y`, `attachToId` (optional) | Adds a text annotation, optionally associated with an element. |
+| `add_group` | `diagramId`, `name` (optional), `x`, `y`, `width`, `height`, `categoryValue` (optional) | Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics. |
 
 ### Camunda Forms Tools
 

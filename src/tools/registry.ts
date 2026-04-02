@@ -303,6 +303,51 @@ export const resizeElementSchema = z.object({
   height: z.number().describe('New height in pixels'),
 });
 
+export const setFlowWaypointsSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  flowId: z.string().describe('ID of the existing sequence flow or message flow'),
+  waypoints: z.array(z.object({
+    x: z.number().describe('X coordinate'),
+    y: z.number().describe('Y coordinate'),
+  })).min(2).describe('New routing path including source and target connection points (minimum 2 points)'),
+});
+
+export const autoLayoutSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+});
+
+export const getElementBoundsSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element'),
+});
+
+export const cloneElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  sourceId: z.string().describe('ID of the element to clone'),
+  name: z.string().optional().describe('Override the name on the cloned element'),
+  x: z.number().describe('X position for the clone'),
+  y: z.number().describe('Y position for the clone'),
+  deep: z.boolean().default(false).describe('For expanded subprocesses, also clone all child elements and internal flows'),
+});
+
+export const batchOperationsSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  operations: z.array(z.object({
+    tool: z.string().describe('Tool name to execute (e.g. "move_element", "connect_elements", "delete_element", "set_properties", "resize_element", "add_task", "add_gateway", "add_event")'),
+    params: z.record(z.unknown()).describe('Parameters matching the individual tool schema'),
+  })).min(1).describe('Ordered list of operations to execute. Use "$ref:N" as a string value to reference the elementId/connectionId returned by operation at index N.'),
+});
+
+export const addGroupSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  name: z.string().optional().describe('Label displayed on the group'),
+  x: z.number().default(200).describe('Top-left x coordinate'),
+  y: z.number().default(200).describe('Top-left y coordinate'),
+  width: z.number().default(400).describe('Group width'),
+  height: z.number().default(200).describe('Group height'),
+  categoryValue: z.string().optional().describe('BPMN category value for the group'),
+});
+
 // ---------------------------------------------------------------------------
 // Tab management schemas
 // ---------------------------------------------------------------------------
@@ -411,6 +456,13 @@ export const tools: ToolDefinition[] = [
   { name: 'deploy_process', description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.', inputSchema: deployProcessSchema, executeLocal: true },
   // v0.8 tools
   { name: 'resize_element', description: 'Resizes a shape element (expanded subprocess, pool, lane, etc.) to the given width and height. The element center stays fixed.', inputSchema: resizeElementSchema, executeLocal: false },
+  // v0.9 tools
+  { name: 'set_flow_waypoints', description: 'Replaces the visual waypoints on an existing sequence/message flow without modifying source, target, name, conditions, or extensions. Returns the updated waypoints.', inputSchema: setFlowWaypointsSchema, executeLocal: false },
+  { name: 'auto_layout', description: 'Applies the Modeler built-in auto-layout to reposition all shapes and re-route all connections for clean, non-overlapping rendering.', inputSchema: autoLayoutSchema, executeLocal: true },
+  { name: 'get_element_bounds', description: 'Returns the exact rendered bounds, center, edge connection points, and waypoints (for flows) of an element. Useful for calculating coordinates.', inputSchema: getElementBoundsSchema, executeLocal: false },
+  { name: 'clone_element', description: 'Clones an element with all its properties, extensions, and configuration. Use deep=true for expanded subprocesses to also clone children and internal flows.', inputSchema: cloneElementSchema, executeLocal: false },
+  { name: 'batch_operations', description: 'Executes multiple tool operations in sequence. Use "$ref:N" in params to reference the elementId/connectionId from operation N. Returns results array.', inputSchema: batchOperationsSchema, executeLocal: false },
+  { name: 'add_group', description: 'Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics.', inputSchema: addGroupSchema, executeLocal: false },
   // tab management
   { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
   { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },

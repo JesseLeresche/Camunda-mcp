@@ -341,8 +341,8 @@ describe('dispatch routing', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (31)', () => {
-    expect(tools).toHaveLength(31);
+  it('has the expected number of tools (37)', () => {
+    expect(tools).toHaveLength(37);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {
@@ -361,14 +361,14 @@ describe('tools registry', () => {
     }
   });
 
-  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, list_open_diagrams, switch_diagram', () => {
+  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, auto_layout, list_open_diagrams, switch_diagram', () => {
     const localTools = tools.filter(t => t.executeLocal).map(t => t.name);
     expect(localTools).toEqual(
       expect.arrayContaining([
         'create_model', 'create_form', 'add_form_field', 'create_dmn', 'deploy_process',
-        'list_open_diagrams', 'switch_diagram',
+        'auto_layout', 'list_open_diagrams', 'switch_diagram',
       ])
     );
-    expect(localTools).toHaveLength(7);
+    expect(localTools).toHaveLength(8);
   });
 });

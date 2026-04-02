@@ -12,6 +12,8 @@ import {
   addEndEventTypedSchema, addMessageFlowSchema, addAnnotationSchema,
   createDmnSchema, deployProcessSchema,
   resizeElementSchema,
+  setFlowWaypointsSchema, autoLayoutSchema, getElementBoundsSchema,
+  cloneElementSchema, batchOperationsSchema, addGroupSchema,
   listOpenDiagramsSchema, switchDiagramSchema,
 } from './registry';
 
@@ -479,6 +481,31 @@ async function switchDiagram(
 }
 
 /**
+ * Applies the Modeler's built-in auto-layout to the current diagram.
+ */
+async function autoLayout(
+  params: Record<string, unknown>
+): Promise<CallToolResult> {
+  autoLayoutSchema.parse(params);
+  try {
+    const result = await executeInRenderer(
+      `window.__mcpTabManager`
+      + ` ? window.__mcpTabManager.autoLayout()`
+      + ` : Promise.reject(new Error('Tab manager not initialized — ensure the plugin is loaded and a diagram has been opened'))`
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result) }],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+      isError: true,
+    };
+  }
+}
+
+/**
  * Dispatches an MCP tool call to the appropriate handler.
  *
  * Local tools (e.g. create_model) execute directly in Node.js.
@@ -511,6 +538,9 @@ export async function dispatch(
       case 'switch_diagram':
         return await switchDiagram(params);
 
+      case 'auto_layout':
+        return await autoLayout(params);
+
       case 'add_start_event':
       case 'add_task':
       case 'add_end_event':
@@ -534,7 +564,12 @@ export async function dispatch(
       case 'add_end_event_typed':
       case 'add_message_flow':
       case 'add_annotation':
-      case 'resize_element': {
+      case 'resize_element':
+      case 'set_flow_waypoints':
+      case 'get_element_bounds':
+      case 'clone_element':
+      case 'batch_operations':
+      case 'add_group': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -559,6 +594,11 @@ export async function dispatch(
         else if (toolName === 'add_message_flow') addMessageFlowSchema.parse(params);
         else if (toolName === 'add_annotation') addAnnotationSchema.parse(params);
         else if (toolName === 'resize_element') resizeElementSchema.parse(params);
+        else if (toolName === 'set_flow_waypoints') setFlowWaypointsSchema.parse(params);
+        else if (toolName === 'get_element_bounds') getElementBoundsSchema.parse(params);
+        else if (toolName === 'clone_element') cloneElementSchema.parse(params);
+        else if (toolName === 'batch_operations') batchOperationsSchema.parse(params);
+        else if (toolName === 'add_group') addGroupSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it

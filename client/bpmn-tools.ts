@@ -136,6 +136,16 @@ async function dispatchRendererTool(
       return addAnnotation(params, services);
     case 'resize_element':
       return resizeElement(params, services);
+    case 'set_flow_waypoints':
+      return setFlowWaypoints(params, services);
+    case 'get_element_bounds':
+      return getElementBounds(params, services);
+    case 'clone_element':
+      return cloneElement(params, services);
+    case 'batch_operations':
+      return batchOperations(params, services);
+    case 'add_group':
+      return addGroup(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -983,6 +993,329 @@ function addAnnotation(
   }
 
   return { elementId: shape.id, text, x: shape.x, y: shape.y };
+}
+
+/* ------------------------------------------------------------------ */
+/*  v0.9 — Flow Waypoints, Bounds, Clone, Batch, Group               */
+/* ------------------------------------------------------------------ */
+
+function setFlowWaypoints(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry }: BpmnServices
+) {
+  const flowId = params.flowId as string;
+  const waypoints = params.waypoints as Array<{ x: number; y: number }>;
+
+  const connection = elementRegistry.get(flowId);
+  if (!connection) throw new Error(`Flow "${flowId}" not found`);
+
+  const bo = connection.businessObject;
+  if (bo.$type !== 'bpmn:SequenceFlow' && bo.$type !== 'bpmn:MessageFlow') {
+    throw new Error(`Element "${flowId}" is a ${bo.$type}, not a sequence/message flow`);
+  }
+
+  const newWaypoints = waypoints.map(wp => ({ x: wp.x, y: wp.y }));
+
+  // Use modeling.updateWaypoints if available, otherwise fall back to layoutConnection
+  if (typeof modeling.updateWaypoints === 'function') {
+    modeling.updateWaypoints(connection, newWaypoints);
+  } else {
+    // Direct update: set waypoints and notify diagram-js
+    connection.waypoints = newWaypoints;
+    // Update DI waypoints to persist in XML
+    if (bo.di && bo.di.waypoint) {
+      bo.di.waypoint = newWaypoints.map((wp: { x: number; y: number }) => {
+        const point = bo.di.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
+        return point;
+      });
+    }
+    // Fire change event so the canvas re-renders
+    const eventBus = (modeling as any)._eventBus || (modeling as any).eventBus;
+    if (eventBus) {
+      eventBus.fire('element.changed', { element: connection });
+    }
+  }
+
+  return {
+    flowId,
+    waypoints: connection.waypoints.map((wp: any) => ({ x: wp.x, y: wp.y })),
+  };
+}
+
+function getElementBounds(
+  params: Record<string, unknown>,
+  { elementRegistry }: BpmnServices
+) {
+  const elementId = params.elementId as string;
+  const element = elementRegistry.get(elementId);
+  if (!element) throw new Error(`Element "${elementId}" not found`);
+
+  const result: any = {
+    elementId: element.id,
+    type: element.type,
+  };
+
+  // For connections (flows), return waypoints
+  if (element.waypoints) {
+    result.waypoints = element.waypoints.map((wp: any) => ({ x: wp.x, y: wp.y }));
+    return result;
+  }
+
+  // For shapes, return bounds, center, and connection points
+  const x = element.x;
+  const y = element.y;
+  const width = element.width || 0;
+  const height = element.height || 0;
+
+  result.bounds = { x, y, width, height };
+  result.center = {
+    x: x + width / 2,
+    y: y + height / 2,
+  };
+  result.connectionPoints = {
+    top: { x: x + width / 2, y },
+    bottom: { x: x + width / 2, y: y + height },
+    left: { x, y: y + height / 2 },
+    right: { x: x + width, y: y + height / 2 },
+  };
+
+  return result;
+}
+
+function cloneElement(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry, canvas, moddle, bpmnFactory }: BpmnServices
+) {
+  const sourceId = params.sourceId as string;
+  const overrideName = params.name as string | undefined;
+  const x = params.x as number;
+  const y = params.y as number;
+  const deep = (params.deep as boolean) || false;
+
+  const source = elementRegistry.get(sourceId);
+  if (!source) throw new Error(`Source element "${sourceId}" not found`);
+
+  const bo = source.businessObject;
+
+  // Create shape with same type and dimensions
+  const shapeAttrs: any = { type: source.type };
+  if (bo.$type === 'bpmn:SubProcess') {
+    shapeAttrs.isExpanded = source.isExpanded ?? bo.di?.isExpanded ?? false;
+  }
+
+  const parent = source.parent || canvas.getRootElement();
+  const clone = modeling.createShape(
+    shapeAttrs,
+    { x, y, width: source.width, height: source.height },
+    parent,
+  );
+
+  // Copy simple business object properties
+  const propsToClone: any = {};
+  for (const key of Object.keys(bo)) {
+    if (key.startsWith('$') || ['id', 'di', 'flowElements', 'artifacts', 'laneSets'].includes(key)) continue;
+    if (['incoming', 'outgoing', 'sourceRef', 'targetRef'].includes(key)) continue;
+    if (key === 'extensionElements') continue; // handled separately
+    const val = bo[key];
+    if (val !== undefined && val !== null && typeof val !== 'object') {
+      propsToClone[key] = val;
+    }
+  }
+
+  // Override name if provided
+  if (overrideName !== undefined) {
+    propsToClone.name = overrideName;
+  }
+
+  if (Object.keys(propsToClone).length > 0) {
+    modeling.updateProperties(clone, propsToClone);
+  }
+  if (propsToClone.name || overrideName) {
+    modeling.updateLabel(clone, propsToClone.name || overrideName);
+  }
+
+  // Copy extension elements
+  if (bo.extensionElements?.values?.length > 0) {
+    const cloneBo = clone.businessObject;
+    if (!cloneBo.extensionElements) {
+      cloneBo.extensionElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+      cloneBo.extensionElements.$parent = cloneBo;
+    }
+    for (const ext of bo.extensionElements.values) {
+      try {
+        const clonedExt = JSON.parse(JSON.stringify(ext, (k, v) => k.startsWith('$') && k !== '$type' ? undefined : v));
+        const newExt = moddle.create(ext.$type, clonedExt);
+        newExt.$parent = cloneBo.extensionElements;
+        cloneBo.extensionElements.values.push(newExt);
+      } catch {
+        // Skip extensions that can't be cloned
+      }
+    }
+  }
+
+  // Copy condition expression for sequence flows
+  if (bo.conditionExpression) {
+    const expr = moddle.create('bpmn:FormalExpression', { body: bo.conditionExpression.body });
+    modeling.updateProperties(clone, { conditionExpression: expr });
+  }
+
+  const result: any = {
+    elementId: clone.id,
+    sourceId,
+    type: clone.type,
+    x: clone.x,
+    y: clone.y,
+  };
+
+  // Deep clone: copy children of expanded subprocess
+  if (deep && bo.$type === 'bpmn:SubProcess' && shapeAttrs.isExpanded) {
+    const childIds: string[] = [];
+    const idMap: Record<string, string> = {};
+    const children = (source.children || []).filter(
+      (child: any) => child.type !== 'label'
+    );
+
+    // Clone child shapes
+    for (const child of children) {
+      if (child.waypoints) continue; // skip connections, handle after
+      const childClone = modeling.createShape(
+        { type: child.type },
+        { x: child.x + (x - source.x), y: child.y + (y - source.y), width: child.width, height: child.height },
+        clone,
+      );
+      idMap[child.id] = childClone.id;
+      childIds.push(childClone.id);
+
+      // Copy child name
+      const childBo = child.businessObject;
+      if (childBo.name) {
+        modeling.updateLabel(childClone, childBo.name);
+      }
+    }
+
+    // Clone internal connections
+    for (const child of children) {
+      if (!child.waypoints) continue;
+      const srcId = idMap[child.source?.id];
+      const tgtId = idMap[child.target?.id];
+      if (srcId && tgtId) {
+        const src = elementRegistry.get(srcId);
+        const tgt = elementRegistry.get(tgtId);
+        if (src && tgt) {
+          const conn = modeling.connect(src, tgt);
+          childIds.push(conn.id);
+        }
+      }
+    }
+
+    result.childIds = childIds;
+  }
+
+  return result;
+}
+
+async function batchOperations(
+  params: Record<string, unknown>,
+  services: BpmnServices
+) {
+  const operations = params.operations as Array<{ tool: string; params: Record<string, unknown> }>;
+  const results: any[] = [];
+
+  for (let i = 0; i < operations.length; i++) {
+    const op = operations[i];
+
+    // Resolve $ref:N placeholders in params
+    const resolvedParams = resolveRefs(op.params, results);
+
+    try {
+      const result = await dispatchRendererTool(op.tool, resolvedParams, services);
+      results.push(result);
+    } catch (err: any) {
+      return {
+        error: `Operation ${i} (${op.tool}) failed: ${err.message}`,
+        failedIndex: i,
+        results,
+      };
+    }
+  }
+
+  return { results };
+}
+
+/**
+ * Resolves "$ref:N" placeholders in params by replacing them with the
+ * elementId or connectionId from the result at index N.
+ */
+function resolveRefs(
+  params: Record<string, unknown>,
+  results: any[],
+): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'string' && value.startsWith('$ref:')) {
+      const idx = parseInt(value.slice(5), 10);
+      if (idx >= 0 && idx < results.length) {
+        const ref = results[idx];
+        resolved[key] = ref.elementId || ref.connectionId || ref.flowId || ref.id;
+      } else {
+        resolved[key] = value;
+      }
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+function addGroup(
+  params: Record<string, unknown>,
+  { modeling, canvas, moddle }: BpmnServices
+) {
+  const name = params.name as string | undefined;
+  const x = (params.x as number) || 200;
+  const y = (params.y as number) || 200;
+  const width = (params.width as number) || 400;
+  const height = (params.height as number) || 200;
+  const categoryValue = params.categoryValue as string | undefined;
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const shape = modeling.createShape(
+    { type: 'bpmn:Group' },
+    { x: x + width / 2, y: y + height / 2, width, height },
+    rootElement,
+  );
+
+  // Set the category value (which serves as the group label)
+  if (name || categoryValue) {
+    const bo = shape.businessObject;
+    // Create CategoryValue and Category on the definitions
+    const definitions = bo.$parent?.$parent || canvas.getRootElement()?.businessObject?.$parent;
+    if (definitions) {
+      const catVal = moddle.create('bpmn:CategoryValue', { value: name || categoryValue });
+      const category = moddle.create('bpmn:Category', {
+        id: `Category_${shape.id}`,
+        categoryValue: [catVal],
+      });
+      catVal.$parent = category;
+      category.$parent = definitions;
+
+      if (!definitions.rootElements) definitions.rootElements = [];
+      definitions.rootElements.push(category);
+
+      bo.categoryValueRef = catVal;
+    }
+  }
+
+  return {
+    elementId: shape.id,
+    name: name || null,
+    x: shape.x,
+    y: shape.y,
+    width: shape.width,
+    height: shape.height,
+  };
 }
 
 const McpCommandModule = {
