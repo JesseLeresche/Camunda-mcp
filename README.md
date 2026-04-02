@@ -1,12 +1,14 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.10.0**
+**v1.0.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 37 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 39 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+
+**Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `patch_element` tool updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `list_elements` tool supports field selection and subprocess filtering.
 
 ## Getting Started
 
@@ -60,7 +62,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_elements` | `diagramId`, `typeFilter` (optional, e.g. `"bpmn:Task"`) | Lists all BPMN elements in the current diagram with optional type filter. |
+| `list_elements` | `diagramId`, `typeFilter` (optional), `parentId` (optional — filter to subprocess), `fields` (optional — e.g. `["id", "name"]`) | Lists BPMN elements with optional type filter, subprocess scope, and field selection. |
 | `get_element` | `diagramId`, `elementId` | Returns detailed info about a specific element including properties, extensions, and connections. |
 | `delete_element` | `diagramId`, `elementId` | Removes an element from the diagram. |
 | `get_diagram_xml` | `diagramId` | Exports the current diagram as BPMN 2.0 XML. |
@@ -99,6 +101,15 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 |------|-----------|-------------|
 | `create_dmn` | `name`, `tableName`, `hitPolicy` (UNIQUE/FIRST/etc.), `inputs`, `outputs` | Creates a DMN decision table file with configured inputs, outputs, and hit policy. |
 | `deploy_process` | `filePath`, `clusterUrl`, `clientId`, `clientSecret` | Deploys a BPMN process to Camunda 8 Zeebe. Requires `ZEEBE_ADDRESS`, `ZEEBE_CLIENT_ID`, `ZEEBE_CLIENT_SECRET` env vars. |
+
+### Declarative & Efficiency Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `build_process` | `diagramId`, `elements` (array), `flows` (array, optional), `autoLayout` (default `false`) | Creates an entire process in one call. Elements use friendly type names (`serviceTask`, `exclusiveGateway`, etc.) and logical IDs for cross-referencing. Set `autoLayout=true` to auto-position. Returns `{ idMap }` mapping logical IDs to actual bpmn-js IDs. |
+| `patch_element` | `diagramId`, `elementId`, plus any of: `name`, `documentation`, `conditionExpression`, `waypoints`, `x`, `y`, `taskType`, implementation props | Updates any combination of properties on a BPMN element in one call. Superset of `set_properties` + `set_flow_waypoints` + `move_element`. |
+| `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple tool operations in sequence. Use `"$ref:N"` in params to reference the elementId/connectionId from operation at index N. |
+| `compact: true` | *(flag on any tool)* | Any tool call can include `compact: true` to strip the response to essential IDs and status fields only, reducing token usage by ~80%. |
 
 ### Tab Management Tools
 

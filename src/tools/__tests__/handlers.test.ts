@@ -326,6 +326,29 @@ describe('dispatch routing', () => {
     expect(payload.error).toContain('Electron BrowserWindow not available');
   });
 
+  it('returns "IPC bridge not initialized" for build_process', async () => {
+    const result = await dispatch('build_process', {
+      diagramId: 'test',
+      elements: [{ id: 'start', type: 'startEvent', name: 'Begin' }],
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toBe('IPC bridge not initialized');
+  });
+
+  it('returns "IPC bridge not initialized" for patch_element', async () => {
+    const result = await dispatch('patch_element', {
+      diagramId: 'test',
+      elementId: 'Element_1',
+      name: 'Updated',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toBe('IPC bridge not initialized');
+  });
+
   it('returns a Zod validation error when required params are missing', async () => {
     // create_form requires 'name' — passing empty object should fail validation
     const result = await dispatch('create_form', {});
@@ -338,11 +361,35 @@ describe('dispatch routing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// compact flag tests
+// ---------------------------------------------------------------------------
+describe('compact flag', () => {
+  it('strips create_model response to essential fields when compact=true', async () => {
+    const result = await dispatch('create_model', { name: 'compact-test', compact: true });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+
+    // Should have diagramId but NOT filePath or message
+    expect(payload.diagramId).toBeDefined();
+    expect(payload.filePath).toBeUndefined();
+    expect(payload.message).toBeUndefined();
+
+    // Clean up temp file
+    try {
+      const full = await dispatch('create_model', { name: 'compact-test' });
+      const fullPayload = JSON.parse(full.content[0].text);
+      tempFiles.push(fullPayload.filePath);
+    } catch { /* ignore */ }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (37)', () => {
-    expect(tools).toHaveLength(37);
+  it('has the expected number of tools (39)', () => {
+    expect(tools).toHaveLength(39);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {

@@ -146,6 +146,10 @@ async function dispatchRendererTool(
       return batchOperations(params, services);
     case 'add_group':
       return addGroup(params, services);
+    case 'patch_element':
+      return patchElement(params, services);
+    case 'build_process':
+      return buildProcess(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -641,17 +645,23 @@ function setTaskHeaders(params: Record<string, unknown>, { modeling, elementRegi
 
 function listElements(params: Record<string, unknown>, { elementRegistry }: BpmnServices) {
   const typeFilter = params.typeFilter as string | undefined;
+  const parentId = params.parentId as string | undefined;
+  const fields = params.fields as string[] | undefined;
   const allElements = elementRegistry.getAll();
 
-  const elements = allElements
-    .filter((el: any) => {
-      // Skip DI elements (diagram interchange — visual metadata only)
-      if (el.type && (el.type.startsWith('bpmndi:') || el.type === 'label')) return false;
-      // Apply type filter if specified
-      if (typeFilter && !el.type?.startsWith(typeFilter)) return false;
-      return true;
-    })
-    .map((el: any) => ({
+  if (parentId && !elementRegistry.get(parentId)) {
+    throw new Error(`Parent element "${parentId}" not found`);
+  }
+
+  const filtered = allElements.filter((el: any) => {
+    if (el.type && (el.type.startsWith('bpmndi:') || el.type === 'label')) return false;
+    if (typeFilter && !el.type?.startsWith(typeFilter)) return false;
+    if (parentId && el.parent?.id !== parentId) return false;
+    return true;
+  });
+
+  const elements = filtered.map((el: any) => {
+    const full: Record<string, any> = {
       id: el.id,
       type: el.type,
       name: el.businessObject?.name || null,
@@ -659,7 +669,17 @@ function listElements(params: Record<string, unknown>, { elementRegistry }: Bpmn
       y: el.y,
       width: el.width,
       height: el.height,
-    }));
+      parentId: el.parent?.id || null,
+      incoming: (el.incoming || []).map((c: any) => c.id),
+      outgoing: (el.outgoing || []).map((c: any) => c.id),
+    };
+    if (!fields) return full;
+    const picked: Record<string, any> = { id: el.id }; // id always included
+    for (const f of fields) {
+      if (f in full) picked[f] = full[f];
+    }
+    return picked;
+  });
 
   return { elements, count: elements.length };
 }
@@ -1315,6 +1335,283 @@ function addGroup(
     y: shape.y,
     width: shape.width,
     height: shape.height,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  v0.10 — patch_element + build_process                             */
+/* ------------------------------------------------------------------ */
+
+function patchElement(
+  params: Record<string, unknown>,
+  services: BpmnServices
+) {
+  const elementId = params.elementId as string;
+  const element = services.elementRegistry.get(elementId);
+  if (!element) throw new Error(`Element "${elementId}" not found`);
+
+  const patched: string[] = [];
+
+  // Properties (reuse setProperties logic)
+  const propKeys = [
+    'name', 'documentation', 'conditionExpression', 'implementationType',
+    'implementationValue', 'taskTopic', 'taskPriority', 'taskType',
+    'taskRetries', 'isExecutable',
+  ];
+  const hasProps = propKeys.some(k => params[k] !== undefined);
+  if (hasProps) {
+    setProperties({ ...params, elementId }, services);
+    patched.push(...propKeys.filter(k => params[k] !== undefined));
+  }
+
+  // Update visual label when name changes (setProperties only sets the BO property)
+  if (params.name !== undefined) {
+    services.modeling.updateLabel(element, params.name as string);
+  }
+
+  // Waypoints
+  if (params.waypoints) {
+    setFlowWaypoints({ flowId: elementId, waypoints: params.waypoints }, services);
+    patched.push('waypoints');
+  }
+
+  // Position
+  if (params.x !== undefined || params.y !== undefined) {
+    const cx = element.x + (element.width || 0) / 2;
+    const cy = element.y + (element.height || 0) / 2;
+    const newX = (params.x as number) ?? cx;
+    const newY = (params.y as number) ?? cy;
+    moveElement({ elementId, x: newX, y: newY }, services);
+    patched.push('position');
+  }
+
+  return { elementId, patched };
+}
+
+/* ------------------------------------------------------------------ */
+/*  build_process — declarative process builder                       */
+/* ------------------------------------------------------------------ */
+
+const TYPE_MAP: Record<string, string> = {
+  startEvent: 'bpmn:StartEvent',
+  endEvent: 'bpmn:EndEvent',
+  task: 'bpmn:Task',
+  userTask: 'bpmn:UserTask',
+  serviceTask: 'bpmn:ServiceTask',
+  sendTask: 'bpmn:SendTask',
+  receiveTask: 'bpmn:ReceiveTask',
+  scriptTask: 'bpmn:ScriptTask',
+  businessRuleTask: 'bpmn:BusinessRuleTask',
+  manualTask: 'bpmn:ManualTask',
+  exclusiveGateway: 'bpmn:ExclusiveGateway',
+  parallelGateway: 'bpmn:ParallelGateway',
+  inclusiveGateway: 'bpmn:InclusiveGateway',
+  eventBasedGateway: 'bpmn:EventBasedGateway',
+  subprocess: 'bpmn:SubProcess',
+  callActivity: 'bpmn:CallActivity',
+  intermediateCatchEvent: 'bpmn:IntermediateCatchEvent',
+  intermediateThrowEvent: 'bpmn:IntermediateThrowEvent',
+  boundaryEvent: 'bpmn:BoundaryEvent',
+  textAnnotation: 'bpmn:TextAnnotation',
+  group: 'bpmn:Group',
+};
+
+const END_EVENT_DEFS: Record<string, string> = {
+  endEventError: 'bpmn:ErrorEventDefinition',
+  endEventTerminate: 'bpmn:TerminateEventDefinition',
+  endEventSignal: 'bpmn:SignalEventDefinition',
+  endEventMessage: 'bpmn:MessageEventDefinition',
+  endEventEscalation: 'bpmn:EscalationEventDefinition',
+};
+
+// Default x spacing for auto-positioned elements
+const DEFAULT_SPACING_X = 180;
+const DEFAULT_START_X = 200;
+const DEFAULT_Y = 200;
+
+async function buildProcess(
+  params: Record<string, unknown>,
+  services: BpmnServices
+) {
+  const { modeling, canvas, elementRegistry, moddle, bpmnFactory } = services;
+  const elements = params.elements as any[];
+  const flows = (params.flows as any[]) || [];
+  const autoLayoutFlag = (params.autoLayout as boolean) || false;
+
+  const root = canvas.getRootElement();
+  if (!root) throw new Error('No diagram is currently open');
+
+  const idMap: Record<string, string> = {};
+  let nextX = DEFAULT_START_X;
+
+  // Phase 1: Create all elements
+  for (const el of elements) {
+    const logicalId = el.id as string;
+    const typeName = el.type as string;
+    const name = el.name as string | undefined;
+    const x = (el.x as number) ?? nextX;
+    const y = (el.y as number) ?? DEFAULT_Y;
+
+    // Resolve parent (logical ID → real ID)
+    let parent = root;
+    if (el.parentId) {
+      const realParentId = idMap[el.parentId];
+      if (realParentId) {
+        parent = elementRegistry.get(realParentId) || root;
+      }
+    }
+
+    let shape: any;
+
+    // Handle typed end events (endEventError, endEventTerminate, etc.)
+    if (END_EVENT_DEFS[typeName]) {
+      shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
+      const bo = shape.businessObject;
+      const defType = END_EVENT_DEFS[typeName];
+      const eventDef = bpmnFactory.create(defType);
+      eventDef.$parent = bo;
+      bo.eventDefinitions = [eventDef];
+
+    // Handle subprocesses
+    } else if (typeName === 'subprocess' || typeName === 'callActivity') {
+      const bpmnType = TYPE_MAP[typeName];
+      const shapeAttrs: any = { type: bpmnType };
+      if (typeName === 'subprocess') {
+        shapeAttrs.isExpanded = !(el.collapsed ?? false);
+      }
+      const w = (el.width as number) || 350;
+      const h = (el.height as number) || 200;
+      shape = modeling.createShape(shapeAttrs, { x, y, width: w, height: h }, parent);
+      if (el.calledElement && typeName === 'callActivity') {
+        modeling.updateProperties(shape, { calledElement: el.calledElement });
+      }
+
+    // Handle boundary events
+    } else if (typeName === 'boundaryEvent') {
+      const hostId = el.attachedToId ? (idMap[el.attachedToId] || el.attachedToId) : undefined;
+      if (!hostId) throw new Error(`BoundaryEvent "${logicalId}" requires attachedToId`);
+      const host = elementRegistry.get(hostId);
+      if (!host) throw new Error(`Host element "${hostId}" not found for BoundaryEvent`);
+      shape = modeling.createShape(
+        { type: 'bpmn:BoundaryEvent', host },
+        { x, y },
+        host.parent,
+      );
+      if (el.cancelActivity === false) {
+        modeling.updateProperties(shape, { cancelActivity: false });
+      }
+      if (el.eventDefinitionType) {
+        const bo = shape.businessObject;
+        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        eventDef.$parent = bo;
+        bo.eventDefinitions = [eventDef];
+      }
+
+    // Handle intermediate events
+    } else if (typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
+      shape = modeling.createShape({ type: TYPE_MAP[typeName] }, { x, y }, parent);
+      if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
+        const bo = shape.businessObject;
+        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        eventDef.$parent = bo;
+        bo.eventDefinitions = [eventDef];
+      }
+
+    // Standard elements
+    } else {
+      const bpmnType = TYPE_MAP[typeName];
+      if (!bpmnType) throw new Error(`Unknown element type "${typeName}"`);
+      shape = modeling.createShape({ type: bpmnType }, { x, y }, parent);
+    }
+
+    // Set label
+    if (name) {
+      modeling.updateLabel(shape, name);
+    }
+
+    // Apply properties
+    if (el.properties) {
+      const props: any = {};
+      if (el.properties.documentation) {
+        const doc = moddle.create('bpmn:Documentation', { text: el.properties.documentation });
+        props.documentation = [doc];
+      }
+      if (el.properties.conditionExpression) {
+        const expr = moddle.create('bpmn:FormalExpression', { body: el.properties.conditionExpression });
+        props.conditionExpression = expr;
+      }
+      if (el.properties.isExecutable !== undefined) props.isExecutable = el.properties.isExecutable;
+      if (el.properties.taskType) {
+        // Zeebe job type
+        const hasZeebe = !!moddle.getPackage('zeebe');
+        if (hasZeebe) {
+          const bo = shape.businessObject;
+          if (!bo.extensionElements) {
+            bo.extensionElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+            bo.extensionElements.$parent = bo;
+          }
+          const taskDef = moddle.create('zeebe:TaskDefinition', { type: el.properties.taskType, retries: el.properties.taskRetries || '3' });
+          taskDef.$parent = bo.extensionElements;
+          bo.extensionElements.values.push(taskDef);
+        }
+      }
+      if (Object.keys(props).length > 0) {
+        modeling.updateProperties(shape, props);
+      }
+    }
+
+    idMap[logicalId] = shape.id;
+    nextX = x + DEFAULT_SPACING_X;
+  }
+
+  // Phase 2: Create all flows
+  const flowIds: string[] = [];
+  for (const flow of flows) {
+    const sourceRealId = idMap[flow.from];
+    const targetRealId = idMap[flow.to];
+    if (!sourceRealId) throw new Error(`Flow source "${flow.from}" not found in idMap`);
+    if (!targetRealId) throw new Error(`Flow target "${flow.to}" not found in idMap`);
+
+    const source = elementRegistry.get(sourceRealId);
+    const target = elementRegistry.get(targetRealId);
+    if (!source) throw new Error(`Source element "${sourceRealId}" not found`);
+    if (!target) throw new Error(`Target element "${targetRealId}" not found`);
+
+    let connection;
+    if (flow.waypoints?.length > 0) {
+      connection = modeling.createConnection(source, target, {
+        type: 'bpmn:SequenceFlow',
+        waypoints: flow.waypoints.map((wp: any) => ({ x: wp.x, y: wp.y })),
+      }, source.parent);
+    } else {
+      connection = modeling.connect(source, target);
+    }
+
+    // Set flow name and condition
+    if (flow.name) {
+      modeling.updateLabel(connection, flow.name);
+    }
+    if (flow.conditionExpression) {
+      const expr = moddle.create('bpmn:FormalExpression', { body: flow.conditionExpression });
+      modeling.updateProperties(connection, { conditionExpression: expr });
+    }
+
+    flowIds.push(connection.id);
+  }
+
+  // Phase 3: Auto-layout if requested
+  if (autoLayoutFlag && window.__mcpTabManager?.autoLayout) {
+    try {
+      await window.__mcpTabManager.autoLayout();
+    } catch {
+      // Auto-layout is best-effort — don't fail the whole build
+    }
+  }
+
+  return {
+    idMap,
+    elementCount: elements.length,
+    flowCount: flowIds.length,
   };
 }
 

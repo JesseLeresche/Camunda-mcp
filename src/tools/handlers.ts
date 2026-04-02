@@ -14,6 +14,7 @@ import {
   resizeElementSchema,
   setFlowWaypointsSchema, autoLayoutSchema, getElementBoundsSchema,
   cloneElementSchema, batchOperationsSchema, addGroupSchema,
+  patchElementSchema, buildProcessSchema,
   listOpenDiagramsSchema, switchDiagramSchema,
 } from './registry';
 
@@ -506,40 +507,92 @@ async function autoLayout(
 }
 
 /**
+ * Strips a tool response down to essential IDs and status fields.
+ * Applied when the caller passes `compact: true`.
+ */
+function compactResult(result: CallToolResult): CallToolResult {
+  if (result.isError) return result;
+  try {
+    const data = JSON.parse(result.content[0].text);
+    const compacted: Record<string, unknown> = {};
+    for (const key of Object.keys(data)) {
+      if (key.endsWith('Id') || key === 'id' || key === 'idMap'
+        || key === 'deleted' || key === 'imported' || key === 'saved'
+        || key === 'applied' || key === 'switched' || key === 'patched'
+        || key === 'error' || key === 'results' || key === 'childIds') {
+        compacted[key] = data[key];
+      }
+    }
+    // Compact list_elements: trim elements to id + type
+    if (Array.isArray(data.elements)) {
+      compacted.elements = data.elements.map((el: any) => ({ id: el.id, type: el.type }));
+    }
+    // Compact tabs
+    if (Array.isArray(data.tabs)) {
+      compacted.tabs = data.tabs.map((t: any) => ({ id: t.id, name: t.name }));
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(compacted) }],
+    };
+  } catch {
+    return result;
+  }
+}
+
+/**
  * Dispatches an MCP tool call to the appropriate handler.
  *
  * Local tools (e.g. create_model) execute directly in Node.js.
  * Renderer tools (e.g. add_start_event) are forwarded via the IPC bridge.
+ *
+ * All tools support an optional `compact: true` parameter that strips the
+ * response down to essential IDs and status fields.
  */
 export async function dispatch(
   toolName: string,
   params: Record<string, unknown>
 ): Promise<CallToolResult> {
+  // Extract compact flag before schema validation (not part of individual schemas)
+  const compact = !!params.compact;
+  if (params.compact !== undefined) {
+    params = { ...params };
+    delete params.compact;
+  }
+
   try {
+    let result: CallToolResult;
     switch (toolName) {
       case 'create_model':
-        return await createModel(params);
+        result = await createModel(params);
+        break;
 
       case 'create_form':
-        return await createForm(params);
+        result = await createForm(params);
+        break;
 
       case 'add_form_field':
-        return await addFormField(params);
+        result = await addFormField(params);
+        break;
 
       case 'create_dmn':
-        return await createDmn(params);
+        result = await createDmn(params);
+        break;
 
       case 'deploy_process':
-        return await deployProcess(params);
+        result = await deployProcess(params);
+        break;
 
       case 'list_open_diagrams':
-        return await listOpenDiagrams();
+        result = await listOpenDiagrams();
+        break;
 
       case 'switch_diagram':
-        return await switchDiagram(params);
+        result = await switchDiagram(params);
+        break;
 
       case 'auto_layout':
-        return await autoLayout(params);
+        result = await autoLayout(params);
+        break;
 
       case 'add_start_event':
       case 'add_task':
@@ -569,7 +622,9 @@ export async function dispatch(
       case 'get_element_bounds':
       case 'clone_element':
       case 'batch_operations':
-      case 'add_group': {
+      case 'add_group':
+      case 'patch_element':
+      case 'build_process': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -599,6 +654,8 @@ export async function dispatch(
         else if (toolName === 'clone_element') cloneElementSchema.parse(params);
         else if (toolName === 'batch_operations') batchOperationsSchema.parse(params);
         else if (toolName === 'add_group') addGroupSchema.parse(params);
+        else if (toolName === 'patch_element') patchElementSchema.parse(params);
+        else if (toolName === 'build_process') buildProcessSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it
@@ -634,22 +691,23 @@ export async function dispatch(
 
         // save_diagram: renderer returns XML, we write the file on the Node.js side
         if (toolName === 'save_diagram') {
-          const result = await ipcBridge(toolName, params);
+          result = await ipcBridge(toolName, params);
           try {
             const resultText = JSON.parse(result.content[0].text);
             if (resultText.xml && resultText.filePath) {
               fs.writeFileSync(resultText.filePath, resultText.xml, 'utf-8');
-              return {
+              result = {
                 content: [{ type: 'text', text: JSON.stringify({ saved: true, filePath: resultText.filePath }) }],
               };
             }
           } catch {
             // If parsing/writing fails, return the original result
           }
-          return result;
+          break;
         }
 
-        return await ipcBridge(toolName, params);
+        result = await ipcBridge(toolName, params);
+        break;
       }
 
       default:
@@ -666,6 +724,8 @@ export async function dispatch(
           isError: true,
         };
     }
+
+    return compact ? compactResult(result) : result;
   } catch (err) {
     // Catch Zod validation errors and return them as proper MCP error results
     if (err instanceof z.ZodError) {

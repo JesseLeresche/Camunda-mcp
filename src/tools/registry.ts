@@ -189,6 +189,8 @@ export const setTaskHeadersSchema = z.object({
 export const listElementsSchema = z.object({
   diagramId: z.string().describe('ID returned by create_model'),
   typeFilter: z.string().optional().describe('Filter by BPMN type prefix, e.g. "bpmn:Task"'),
+  parentId: z.string().optional().describe('Filter to elements inside this expanded subprocess'),
+  fields: z.array(z.string()).optional().describe('Fields to include per element: id, type, name, x, y, width, height, parentId, incoming, outgoing. Defaults to all. id is always included.'),
 });
 
 export const getElementSchema = z.object({
@@ -348,6 +350,68 @@ export const addGroupSchema = z.object({
   categoryValue: z.string().optional().describe('BPMN category value for the group'),
 });
 
+export const buildProcessSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elements: z.array(z.object({
+    id: z.string().describe('Logical ID for cross-referencing in flows — the actual bpmn-js ID is generated and returned in idMap'),
+    type: z.enum([
+      'startEvent', 'endEvent', 'task', 'userTask', 'serviceTask', 'sendTask',
+      'receiveTask', 'scriptTask', 'businessRuleTask', 'manualTask',
+      'exclusiveGateway', 'parallelGateway', 'inclusiveGateway', 'eventBasedGateway',
+      'subprocess', 'callActivity',
+      'intermediateCatchEvent', 'intermediateThrowEvent', 'boundaryEvent',
+      'endEventError', 'endEventTerminate', 'endEventSignal', 'endEventMessage', 'endEventEscalation',
+      'textAnnotation', 'group',
+    ]).describe('Element type'),
+    name: z.string().optional().describe('Element label'),
+    x: z.number().optional().describe('Canvas x coordinate (auto-assigned if omitted)'),
+    y: z.number().optional().describe('Canvas y coordinate (defaults to 200 if omitted)'),
+    parentId: z.string().optional().describe('Logical ID of parent expanded subprocess'),
+    properties: z.object({
+      conditionExpression: z.string().optional(),
+      taskType: z.string().optional().describe('Zeebe job type'),
+      taskRetries: z.string().optional(),
+      documentation: z.string().optional(),
+      implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional(),
+      implementationValue: z.string().optional(),
+      isExecutable: z.boolean().optional(),
+    }).optional().describe('Properties to set on the element after creation'),
+    width: z.number().optional().describe('Width for subprocesses/groups'),
+    height: z.number().optional().describe('Height for subprocesses/groups'),
+    collapsed: z.boolean().optional().describe('Collapsed subprocess'),
+    calledElement: z.string().optional().describe('Process ID for CallActivity'),
+    eventDefinitionType: z.string().optional().describe('Event definition type for intermediate/boundary events'),
+    attachedToId: z.string().optional().describe('Logical ID of host element for BoundaryEvent'),
+    cancelActivity: z.boolean().optional().describe('Interrupting boundary event (default true)'),
+  })).describe('Elements to create'),
+  flows: z.array(z.object({
+    from: z.string().describe('Logical ID of source element'),
+    to: z.string().describe('Logical ID of target element'),
+    name: z.string().optional().describe('Flow label'),
+    conditionExpression: z.string().optional().describe('FEEL/JUEL condition'),
+    waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
+  })).optional().describe('Sequence flows to create between elements'),
+  autoLayout: z.boolean().default(false).describe('Apply Modeler auto-layout after building'),
+});
+
+export const patchElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element to patch'),
+  name: z.string().optional().describe('Element name / label'),
+  documentation: z.string().optional().describe('Documentation text'),
+  conditionExpression: z.string().optional().describe('FEEL/JUEL condition for sequence flows'),
+  implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional(),
+  implementationValue: z.string().optional(),
+  taskTopic: z.string().optional(),
+  taskPriority: z.string().optional(),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskRetries: z.string().optional(),
+  isExecutable: z.boolean().optional(),
+  waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional().describe('New waypoints for sequence/message flows'),
+  x: z.number().optional().describe('Move element to new x center coordinate'),
+  y: z.number().optional().describe('Move element to new y center coordinate'),
+});
+
 // ---------------------------------------------------------------------------
 // Tab management schemas
 // ---------------------------------------------------------------------------
@@ -463,6 +527,8 @@ export const tools: ToolDefinition[] = [
   { name: 'clone_element', description: 'Clones an element with all its properties, extensions, and configuration. Use deep=true for expanded subprocesses to also clone children and internal flows.', inputSchema: cloneElementSchema, executeLocal: false },
   { name: 'batch_operations', description: 'Executes multiple tool operations in sequence. Use "$ref:N" in params to reference the elementId/connectionId from operation N. Returns results array.', inputSchema: batchOperationsSchema, executeLocal: false },
   { name: 'add_group', description: 'Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics.', inputSchema: addGroupSchema, executeLocal: false },
+  { name: 'patch_element', description: 'Updates any combination of properties on a BPMN element in one call: name, documentation, conditions, implementation, waypoints, position. Superset of set_properties + set_flow_waypoints + move_element.', inputSchema: patchElementSchema, executeLocal: false },
+  { name: 'build_process', description: 'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position.', inputSchema: buildProcessSchema, executeLocal: false },
   // tab management
   { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
   { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },
