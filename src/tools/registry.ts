@@ -296,6 +296,13 @@ export const deployProcessSchema = z.object({
   clientSecret: z.string().optional().describe('OAuth client secret (defaults to ZEEBE_CLIENT_SECRET env var)'),
 });
 
+export const resizeElementSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().describe('ID of the element to resize'),
+  width: z.number().describe('New width in pixels'),
+  height: z.number().describe('New height in pixels'),
+});
+
 // ---------------------------------------------------------------------------
 // Tab management schemas
 // ---------------------------------------------------------------------------
@@ -402,7 +409,9 @@ export const tools: ToolDefinition[] = [
   // v0.5 tools
   { name: 'create_dmn', description: 'Creates a new DMN decision table file.', inputSchema: createDmnSchema, executeLocal: true },
   { name: 'deploy_process', description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.', inputSchema: deployProcessSchema, executeLocal: true },
-  // v0.8 tools — tab management
+  // v0.8 tools
+  { name: 'resize_element', description: 'Resizes a shape element (expanded subprocess, pool, lane, etc.) to the given width and height. The element center stays fixed.', inputSchema: resizeElementSchema, executeLocal: false },
+  // tab management
   { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
   { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },
 ];

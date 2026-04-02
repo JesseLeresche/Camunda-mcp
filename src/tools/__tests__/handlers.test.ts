@@ -341,8 +341,8 @@ describe('dispatch routing', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (30)', () => {
-    expect(tools).toHaveLength(30);
+  it('has the expected number of tools (31)', () => {
+    expect(tools).toHaveLength(31);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {

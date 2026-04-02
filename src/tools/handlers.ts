@@ -11,6 +11,7 @@ import {
   moveElementSchema, saveDiagramSchema, addParticipantSchema, addLaneSchema,
   addEndEventTypedSchema, addMessageFlowSchema, addAnnotationSchema,
   createDmnSchema, deployProcessSchema,
+  resizeElementSchema,
   listOpenDiagramsSchema, switchDiagramSchema,
 } from './registry';
 
@@ -532,7 +533,8 @@ export async function dispatch(
       case 'add_lane':
       case 'add_end_event_typed':
       case 'add_message_flow':
-      case 'add_annotation': {
+      case 'add_annotation':
+      case 'resize_element': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -556,6 +558,7 @@ export async function dispatch(
         else if (toolName === 'add_end_event_typed') addEndEventTypedSchema.parse(params);
         else if (toolName === 'add_message_flow') addMessageFlowSchema.parse(params);
         else if (toolName === 'add_annotation') addAnnotationSchema.parse(params);
+        else if (toolName === 'resize_element') resizeElementSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it

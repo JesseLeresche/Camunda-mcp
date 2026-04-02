@@ -134,6 +134,8 @@ async function dispatchRendererTool(
       return addMessageFlow(params, services);
     case 'add_annotation':
       return addAnnotation(params, services);
+    case 'resize_element':
+      return resizeElement(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -770,6 +772,40 @@ function debugModdle({ moddle }: BpmnServices) {
 /* ------------------------------------------------------------------ */
 /*  Phase 4 (v0.3) — Collaboration, Layout & Advanced Elements        */
 /* ------------------------------------------------------------------ */
+
+function resizeElement(
+  params: Record<string, unknown>,
+  { modeling, elementRegistry }: BpmnServices
+) {
+  const elementId = params.elementId as string;
+  const element = elementRegistry.get(elementId);
+  if (!element) throw new Error(`Element "${elementId}" not found`);
+
+  const newWidth = params.width as number;
+  const newHeight = params.height as number;
+
+  // Keep the element centered: compute new bounds from center point
+  const centerX = element.x + (element.width || 0) / 2;
+  const centerY = element.y + (element.height || 0) / 2;
+  const newBounds = {
+    x: centerX - newWidth / 2,
+    y: centerY - newHeight / 2,
+    width: newWidth,
+    height: newHeight,
+  };
+
+  modeling.resizeShape(element, newBounds);
+
+  return {
+    elementId,
+    width: element.width,
+    height: element.height,
+    x: element.x,
+    y: element.y,
+    centerX: element.x + element.width / 2,
+    centerY: element.y + element.height / 2,
+  };
+}
 
 function moveElement(
   params: Record<string, unknown>,

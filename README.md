@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v0.8.0**
+**v0.9.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 30 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 31 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 ## Getting Started
 
@@ -66,6 +66,7 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `get_diagram_xml` | `diagramId` | Exports the current diagram as BPMN 2.0 XML. |
 | `import_xml` | `diagramId`, `xml` (string) | Imports/replaces the current diagram from BPMN 2.0 XML. |
 | `move_element` | `diagramId`, `elementId`, `x`, `y` | Moves an element to new center coordinates. |
+| `resize_element` | `diagramId`, `elementId`, `width`, `height` | Resizes a shape (expanded subprocess, pool, lane, etc.) to the given dimensions. The element center stays fixed. |
 | `save_diagram` | `diagramId`, `filePath` | Saves the current diagram as BPMN XML to a file path. |
 
 ### Collaboration Tools
