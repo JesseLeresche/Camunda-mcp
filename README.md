@@ -1,12 +1,12 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v1.1.0**
+**v1.2.0**
 
 ## Overview
 
 This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) HTTP server to the Camunda Desktop Modeler. Once loaded, AI coding assistants such as Claude Code, Claude Desktop, and GitHub Copilot can create and manipulate BPMN diagrams and Camunda Forms inside the live Modeler through standard MCP tool calls.
 
-The plugin ships with 40 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
+The plugin ships with 41 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 **Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `patch_element` tool updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `list_elements` tool supports field selection and subprocess filtering.
 
@@ -73,7 +73,8 @@ The plugin runs across two Electron processes connected by a renderer bridge.
 | `get_element_bounds` | `diagramId`, `elementId` | Returns exact rendered bounds, center, edge connection points (top/bottom/left/right midpoints), and waypoints (for flows). |
 | `clone_element` | `diagramId`, `sourceId`, `name` (optional), `x`, `y`, `deep` (default `false`) | Clones an element with all its properties and extensions. Use `deep=true` for expanded subprocesses to also clone children and internal flows. |
 | `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple tool operations in sequence. Use `"$ref:N"` in params to reference the elementId/connectionId from operation at index N. |
-| `auto_layout` | `diagramId` | Applies the Modeler's built-in auto-layout to reposition all shapes and re-route all connections for clean rendering. |
+| `auto_layout` | `diagramId`, `elementId` (optional — scope to subprocess), `options` (optional: `branchSpacing`, `horizontalSpacing`, `flowRouting`, `mergeAlignment`, `boundaryEventPosition`) | Smart branch-aware auto-layout: fans out gateway branches vertically, aligns merge gateways, routes flows orthogonally, and positions boundary events. Scope to a subprocess with `elementId`. |
+| `export_image` | `diagramId`, `filePath`, `format` (`png`/`svg`, default `png`), `scale` (default `2`) | Exports the current diagram as a PNG or SVG image file. PNG uses offscreen canvas rasterization at configurable scale. |
 | `save_diagram` | `diagramId`, `filePath` | Saves the current diagram as BPMN XML to a file path. |
 
 ### Collaboration Tools

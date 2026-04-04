@@ -358,7 +358,7 @@
         <bounds x="60" y="160" width="180" height="55"/>
       </child>
       <child xsi:type="archimate:DiagramObject" id="id-a09e826620a241429fca9e34182d78cf" targetConnections="id-c79066845bd44737bc1e47fc67146a88" fontColor="#1A3A5C" lineColor="#5B9BD5" fillColor="#C1DDEF" archimateElement="id-fb4351e378c942e1bad94550cb4f098a">
-        <bounds x="300" y="204" width="200" height="55"/>
+        <bounds x="276" y="214" width="200" height="55"/>
       </child>
       <child xsi:type="archimate:DiagramObject" id="id-7908ac352d4245769d85b3584f6674e8" targetConnections="id-43f6e9c1207a4774a84812bc57e6b344 id-d7ebca2473b14205a217e55ef60cac9b" fontColor="#1A3A5C" lineColor="#5B9BD5" fillColor="#C1DDEF" archimateElement="id-b01d5ffcda6f4b1da178de644821a4b9">
         <bounds x="540" y="160" width="210" height="55"/>
@@ -387,23 +387,27 @@
     </element>
     <element xsi:type="archimate:ArchimateDiagramModel" name="Request Flow Architecture" id="id-fc45881db6e94f9e8eb740929997ea66">
       <child xsi:type="archimate:DiagramObject" id="id-1880986700c844c8b9313facf8954ac5" lineColor="#336699" fillColor="#B3D9FF" archimateElement="id-8128021f0b594ae2a369bfa50a26f1ee">
-        <bounds x="130" y="20" width="240" height="50"/>
-        <sourceConnection xsi:type="archimate:Connection" id="id-cf936217ca3b4c64a552b7224b8a663e" source="id-1880986700c844c8b9313facf8954ac5" target="id-41d98d10dac74a5294755c67552aad54" archimateRelationship="id-71515e27e68c443bb8aa7334183f5732"/>
+        <bounds x="130" y="60" width="240" height="50"/>
+        <sourceConnection xsi:type="archimate:Connection" id="id-cf936217ca3b4c64a552b7224b8a663e" source="id-1880986700c844c8b9313facf8954ac5" target="id-41d98d10dac74a5294755c67552aad54" archimateRelationship="id-71515e27e68c443bb8aa7334183f5732">
+          <bendpoint startX="-58" startY="107" endX="13" endY="-58"/>
+        </sourceConnection>
       </child>
       <child xsi:type="archimate:DiagramObject" id="id-7f998634a2d2480387f1033fd71a471d" lineWidth="2" lineColor="#4CAF50" fillColor="#E8F5E9" archimateElement="id-9ed068f928df42d2a15906289c75c024">
-        <bounds x="80" y="130" width="340" height="160"/>
+        <bounds x="80" y="156" width="340" height="145"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-a77a4b9ff76b4f1499eec20952c40a8c" source="id-7f998634a2d2480387f1033fd71a471d" target="id-41d98d10dac74a5294755c67552aad54" archimateRelationship="id-ef43f39af63b4831bf9f4ba42bfe1d57"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-ce9c3e24d6634e57af606327b8b05d3a" source="id-7f998634a2d2480387f1033fd71a471d" target="id-d5a01154616a4f41a1a2b91874547315" archimateRelationship="id-f003188207124ba5b013dde9a3913b51"/>
         <child xsi:type="archimate:DiagramObject" id="id-41d98d10dac74a5294755c67552aad54" targetConnections="id-cf936217ca3b4c64a552b7224b8a663e id-a77a4b9ff76b4f1499eec20952c40a8c" lineColor="#388E3C" fillColor="#C8E6C9" archimateElement="id-f56e9145b27748238966c0f76fae645c">
-          <bounds x="20" y="90" width="150" height="45"/>
+          <bounds x="24" y="72" width="150" height="45"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="id-d5a01154616a4f41a1a2b91874547315" targetConnections="id-ce9c3e24d6634e57af606327b8b05d3a" lineColor="#388E3C" fillColor="#C8E6C9" archimateElement="id-fb4316bdb3014d7895b27a9a97399566">
-          <bounds x="185" y="90" width="140" height="45"/>
-          <sourceConnection xsi:type="archimate:Connection" id="id-a04125225adc4a37a02b514e7aa9bd81" source="id-d5a01154616a4f41a1a2b91874547315" target="id-23137ecbfa1d4d85a5e547e508a0e24d" archimateRelationship="id-ea954ba8052444af904e6b9e3b2f9965"/>
+          <bounds x="180" y="72" width="140" height="45"/>
+          <sourceConnection xsi:type="archimate:Connection" id="id-a04125225adc4a37a02b514e7aa9bd81" source="id-d5a01154616a4f41a1a2b91874547315" target="id-23137ecbfa1d4d85a5e547e508a0e24d" archimateRelationship="id-ea954ba8052444af904e6b9e3b2f9965">
+            <bendpoint startX="-18" startY="74" endX="62" endY="-96"/>
+          </sourceConnection>
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="id-35d1c8ebd44e43678cfda865c4ab457d" lineWidth="2" lineColor="#FF9800" fillColor="#FFF3E0" archimateElement="id-3f9330eeb9484b5ea8d53c457107e5ab">
-        <bounds x="80" y="370" width="340" height="120"/>
+        <bounds x="80" y="348" width="340" height="120"/>
         <sourceConnection xsi:type="archimate:Connection" id="id-81c3aa7f32434ea383a1ba6e5ea50a55" source="id-35d1c8ebd44e43678cfda865c4ab457d" target="id-23137ecbfa1d4d85a5e547e508a0e24d" archimateRelationship="id-6e951bd29c604e3c905bc7201b23615d"/>
         <child xsi:type="archimate:DiagramObject" id="id-23137ecbfa1d4d85a5e547e508a0e24d" targetConnections="id-a04125225adc4a37a02b514e7aa9bd81 id-81c3aa7f32434ea383a1ba6e5ea50a55" lineColor="#E65100" fillColor="#FFE0B2" archimateElement="id-ace0ec818d43457e8742e91500ff9481">
           <bounds x="55" y="50" width="230" height="45"/>
@@ -411,7 +415,7 @@
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="id-ade6d2ae7eab4f9e94f28642ed7141a5" targetConnections="id-d08fe5a167ba4e39b2e0339a2c2b29b3" lineColor="#7B1FA2" fillColor="#E1BEE7" archimateElement="id-14e9acd6e2e144debdc6ef16dcaba3e9">
-        <bounds x="130" y="550" width="240" height="50"/>
+        <bounds x="130" y="528" width="240" height="50"/>
       </child>
       <documentation>Mirrors the ASCII architecture diagram from the README. Shows the request flow from MCP client through the two Electron processes (Node.js main and Chromium renderer) down to the Camunda Desktop Modeler.</documentation>
     </element>

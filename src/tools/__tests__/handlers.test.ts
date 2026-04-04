@@ -374,13 +374,14 @@ describe('dispatch routing', () => {
 // compact flag tests
 // ---------------------------------------------------------------------------
 describe('compact flag', () => {
-  it('strips create_model response to essential fields when compact=true', async () => {
+  it('strips create_model response to {ok, diagramId} when compact=true', async () => {
     const result = await dispatch('create_model', { name: 'compact-test', compact: true });
 
     expect(result.isError).toBeFalsy();
     const payload = JSON.parse(result.content[0].text);
 
-    // Should have diagramId but NOT filePath or message
+    // Should have ok: true and diagramId, but NOT filePath or message
+    expect(payload.ok).toBe(true);
     expect(payload.diagramId).toBeDefined();
     expect(payload.filePath).toBeUndefined();
     expect(payload.message).toBeUndefined();
@@ -398,8 +399,8 @@ describe('compact flag', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (40)', () => {
-    expect(tools).toHaveLength(40);
+  it('has the expected number of tools (41)', () => {
+    expect(tools).toHaveLength(41);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {
@@ -418,14 +419,14 @@ describe('tools registry', () => {
     }
   });
 
-  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, auto_layout, list_open_diagrams, switch_diagram', () => {
+  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, list_open_diagrams, switch_diagram', () => {
     const localTools = tools.filter(t => t.executeLocal).map(t => t.name);
     expect(localTools).toEqual(
       expect.arrayContaining([
         'create_model', 'create_form', 'add_form_field', 'create_dmn', 'deploy_process',
-        'auto_layout', 'list_open_diagrams', 'switch_diagram',
+        'list_open_diagrams', 'switch_diagram',
       ])
     );
-    expect(localTools).toHaveLength(8);
+    expect(localTools).toHaveLength(7);
   });
 });

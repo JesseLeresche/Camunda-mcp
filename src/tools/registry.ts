@@ -317,6 +317,14 @@ export const setFlowWaypointsSchema = z.object({
 
 export const autoLayoutSchema = z.object({
   diagramId: z.string().describe('ID returned by create_model'),
+  elementId: z.string().optional().describe('Scope layout to a specific expanded subprocess. If omitted, layouts the entire diagram.'),
+  options: z.object({
+    branchSpacing: z.number().default(140).describe('Vertical pixels between gateway branches'),
+    horizontalSpacing: z.number().default(80).describe('Pixels between sequential elements'),
+    flowRouting: z.enum(['orthogonal', 'direct']).default('orthogonal').describe('Connection routing style'),
+    mergeAlignment: z.enum(['center', 'top-branch']).default('center').describe('Where merge gateways align vertically'),
+    boundaryEventPosition: z.enum(['bottom', 'bottom-right']).default('bottom').describe('Default boundary event placement'),
+  }).optional().describe('Layout options'),
 });
 
 export const getElementBoundsSchema = z.object({
@@ -349,6 +357,13 @@ export const addGroupSchema = z.object({
   width: z.number().default(400).describe('Group width'),
   height: z.number().default(200).describe('Group height'),
   categoryValue: z.string().optional().describe('BPMN category value for the group'),
+});
+
+export const exportImageSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  filePath: z.string().describe('Absolute file path to save the image (e.g. /tmp/diagram.png)'),
+  format: z.enum(['svg', 'png']).default('png').describe('Image format'),
+  scale: z.number().default(2).describe('Scale factor for PNG export (1 = 96dpi, 2 = 192dpi for retina)'),
 });
 
 export const buildProcessSchema = z.object({
@@ -531,13 +546,14 @@ export const tools: ToolDefinition[] = [
   { name: 'resize_element', description: 'Resizes a shape element (expanded subprocess, pool, lane, etc.) to the given width and height. The element center stays fixed.', inputSchema: resizeElementSchema, executeLocal: false },
   // v0.9 tools
   { name: 'set_flow_waypoints', description: 'Replaces the visual waypoints on an existing sequence/message flow without modifying source, target, name, conditions, or extensions. Returns the updated waypoints.', inputSchema: setFlowWaypointsSchema, executeLocal: false },
-  { name: 'auto_layout', description: 'Applies the Modeler built-in auto-layout to reposition all shapes and re-route all connections for clean, non-overlapping rendering.', inputSchema: autoLayoutSchema, executeLocal: true },
+  { name: 'auto_layout', description: 'Smart branch-aware auto-layout: fans out gateway branches vertically, aligns merge gateways, routes flows orthogonally, positions boundary events. Use options to control spacing.', inputSchema: autoLayoutSchema, executeLocal: false },
   { name: 'get_element_bounds', description: 'Returns the exact rendered bounds, center, edge connection points, and waypoints (for flows) of an element. Useful for calculating coordinates.', inputSchema: getElementBoundsSchema, executeLocal: false },
   { name: 'clone_element', description: 'Clones an element with all its properties, extensions, and configuration. Use deep=true for expanded subprocesses to also clone children and internal flows.', inputSchema: cloneElementSchema, executeLocal: false },
   { name: 'batch_operations', description: 'Executes multiple tool operations in sequence. Use "$ref:N" in params to reference the elementId/connectionId from operation N. Returns results array.', inputSchema: batchOperationsSchema, executeLocal: false },
   { name: 'add_group', description: 'Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics.', inputSchema: addGroupSchema, executeLocal: false },
   { name: 'patch_element', description: 'Updates any combination of properties on a BPMN element in one call: name, documentation, conditions, implementation, waypoints, position. Superset of set_properties + set_flow_waypoints + move_element.', inputSchema: patchElementSchema, executeLocal: false },
   { name: 'build_process', description: 'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position.', inputSchema: buildProcessSchema, executeLocal: false },
+  { name: 'export_image', description: 'Exports the current diagram as an image file (PNG or SVG). PNG uses an offscreen canvas for rasterization at configurable scale. Returns { saved, filePath, format, width, height }.', inputSchema: exportImageSchema, executeLocal: false },
   { name: 'validate_layout', description: 'Detects layout issues (overlaps, diagonal flows, misalignment, cramped elements, subprocess bounds) and generates actionable fixes. Set autoFix=true to apply all fixes automatically.', inputSchema: validateLayoutSchema, executeLocal: false },
   // tab management
   { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },

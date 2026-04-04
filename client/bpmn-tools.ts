@@ -176,6 +176,10 @@ async function dispatchRendererTool(
       return buildProcess(params, services);
     case 'validate_layout':
       return validateLayout(params, services);
+    case 'auto_layout':
+      return smartAutoLayout(params, services);
+    case 'export_image':
+      return exportImage(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -891,9 +895,30 @@ function moveElement(
   try {
     modeling.moveElements([element], { x: deltaX, y: deltaY });
   } catch (err: any) {
-    // bpmn-js may throw on connection layout recalculation (e.g. circle/line intersection)
-    // The move itself usually still succeeds — return the result with a warning
-    console.warn(`[camunda-mcp] moveElement layout warning for ${elementId}:`, err?.message);
+    // bpmn-js may throw on connection layout recalculation
+    // (e.g. "expected between [1, 2] circle -> line intersections")
+    console.warn(`[camunda-mcp] moveElement layout error for ${elementId}:`, err?.message);
+
+    // The move may not have applied — force the position directly
+    element.x = element.x + deltaX;
+    element.y = element.y + deltaY;
+
+    // Repair broken connections with simple two-point direct waypoints
+    const allConns = [...(element.incoming || []), ...(element.outgoing || [])];
+    for (const conn of allConns) {
+      try {
+        const src = conn.source, tgt = conn.target;
+        if (!src || !tgt) continue;
+        const srcCx = src.x + (src.width || 36) / 2;
+        const srcCy = src.y + (src.height || 36) / 2;
+        const tgtCx = tgt.x + (tgt.width || 36) / 2;
+        const tgtCy = tgt.y + (tgt.height || 36) / 2;
+        conn.waypoints = [
+          { x: srcCx + (src.width || 36) / 2, y: srcCy },
+          { x: tgtCx - (tgt.width || 36) / 2, y: tgtCy },
+        ];
+      } catch { /* skip */ }
+    }
   }
 
   return {
@@ -922,6 +947,76 @@ async function saveDiagram(
   }
   const { xml } = await modeler.saveXML({ format: true });
   return { xml, filePath: params.filePath };
+}
+
+/**
+ * Exports the current diagram as SVG or PNG.
+ * Returns the image data + metadata; the Node.js handler writes the file.
+ */
+async function exportImage(
+  params: Record<string, unknown>,
+  { injector, canvas }: BpmnServices
+) {
+  const filePath = params.filePath as string;
+  const format = (params.format as string) || 'png';
+  const scale = (params.scale as number) || 2;
+
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    try {
+      modeler = injector.get('bpmnjs');
+    } catch {
+      throw new Error('Cannot access modeler instance — saveSVG not available');
+    }
+  }
+
+  // Get SVG from bpmn-js
+  const { svg } = await modeler.saveSVG();
+
+  // Parse dimensions from the SVG viewBox
+  const viewBoxMatch = svg.match(/viewBox="([^"]+)"/);
+  let svgWidth = 800, svgHeight = 600;
+  if (viewBoxMatch) {
+    const parts = viewBoxMatch[1].split(/\s+/).map(Number);
+    if (parts.length === 4) {
+      svgWidth = parts[2];
+      svgHeight = parts[3];
+    }
+  }
+
+  if (format === 'svg') {
+    return { data: svg, filePath, format: 'svg', width: svgWidth, height: svgHeight };
+  }
+
+  // PNG: rasterize SVG using an offscreen canvas in the Chromium renderer
+  const pngWidth = Math.round(svgWidth * scale);
+  const pngHeight = Math.round(svgHeight * scale);
+
+  const pngBase64: string = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const offscreen = document.createElement('canvas');
+      offscreen.width = pngWidth;
+      offscreen.height = pngHeight;
+      const ctx = offscreen.getContext('2d');
+      if (!ctx) { reject(new Error('Could not create canvas 2d context')); return; }
+      // White background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, pngWidth, pngHeight);
+      ctx.drawImage(img, 0, 0, pngWidth, pngHeight);
+      // Extract base64 PNG (strip the data:image/png;base64, prefix)
+      const dataUrl = offscreen.toDataURL('image/png');
+      resolve(dataUrl.split(',')[1]);
+    };
+    img.onerror = () => reject(new Error('Failed to load SVG into Image for PNG rasterization'));
+    // Load SVG as a data URL
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    img.src = URL.createObjectURL(svgBlob);
+  });
+
+  return { data: pngBase64, filePath, format: 'png', width: pngWidth, height: pngHeight };
 }
 
 function addParticipant(
@@ -1640,10 +1735,10 @@ async function buildProcess(
     flowIds.push(connection.id);
   }
 
-  // Phase 3: Auto-layout if requested
-  if (autoLayoutFlag && window.__mcpTabManager?.autoLayout) {
+  // Phase 3: Auto-layout if requested — use the smart layout engine
+  if (autoLayoutFlag) {
     try {
-      await window.__mcpTabManager.autoLayout();
+      await smartAutoLayout({ diagramId: '' }, services);
     } catch {
       // Auto-layout is best-effort — don't fail the whole build
     }
@@ -1654,6 +1749,320 @@ async function buildProcess(
     elementCount: elements.length,
     flowCount: flowIds.length,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  auto_layout — smart branch-aware layout engine                    */
+/* ------------------------------------------------------------------ */
+
+interface LayoutOpts {
+  branchSpacing: number;
+  horizontalSpacing: number;
+  flowRouting: 'orthogonal' | 'direct';
+  mergeAlignment: 'center' | 'top-branch';
+  boundaryEventPosition: 'bottom' | 'bottom-right';
+}
+
+const DEFAULT_LAYOUT_OPTS: LayoutOpts = {
+  branchSpacing: 140,
+  horizontalSpacing: 80,
+  flowRouting: 'orthogonal',
+  mergeAlignment: 'center',
+  boundaryEventPosition: 'bottom',
+};
+
+async function smartAutoLayout(
+  params: Record<string, unknown>,
+  services: BpmnServices
+) {
+  const { modeling, elementRegistry, canvas } = services;
+  const scopeId = params.elementId as string | undefined;
+  const userOpts = (params.options as Partial<LayoutOpts>) || {};
+  const opts: LayoutOpts = { ...DEFAULT_LAYOUT_OPTS, ...userOpts };
+
+  // Wait for rendering to complete so all element positions are up to date
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+  // Resolve scope: either a specific subprocess or the root
+  const scope = scopeId ? elementRegistry.get(scopeId) : canvas.getRootElement();
+  if (!scope) throw new Error(scopeId ? `Element "${scopeId}" not found` : 'No diagram open');
+
+  // Gather shapes and connections within scope
+  const allElements: any[] = elementRegistry.getAll();
+  const shapes = allElements.filter((el: any) => {
+    if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
+    if (el.waypoints) return false;
+    if (el.type === 'bpmn:BoundaryEvent') return false; // handled separately
+    return el.parent === scope;
+  });
+  const connections = allElements.filter((el: any) => {
+    if (!el.waypoints) return false;
+    return el.source?.parent === scope || el.target?.parent === scope;
+  });
+
+  if (shapes.length === 0) return { positioned: 0, routed: 0 };
+
+  // Build adjacency: outgoing map and incoming count
+  const outgoing = new Map<string, { target: any; conn: any; name?: string }[]>();
+  const incomingCount = new Map<string, number>();
+  for (const s of shapes) {
+    outgoing.set(s.id, []);
+    incomingCount.set(s.id, 0);
+  }
+  for (const c of connections) {
+    const sid = c.source?.id, tid = c.target?.id;
+    if (!sid || !tid) continue;
+    if (!outgoing.has(sid) || !incomingCount.has(tid)) continue;
+    outgoing.get(sid)!.push({ target: c.target, conn: c, name: c.businessObject?.name });
+    incomingCount.set(tid, (incomingCount.get(tid) || 0) + 1);
+  }
+
+  // Find start nodes (no incoming within scope)
+  const startNodes = shapes.filter((s: any) =>
+    (incomingCount.get(s.id) || 0) === 0 || s.type === 'bpmn:StartEvent'
+  );
+  if (startNodes.length === 0) {
+    // Fallback: pick the first element
+    startNodes.push(shapes[0]);
+  }
+
+  // BFS to assign column (x) and row (y) per element
+  // Track: column index, row offset, and branch assignments
+  const colMap = new Map<string, number>(); // element id → column index
+  const rowMap = new Map<string, number>(); // element id → row offset
+  const visited = new Set<string>();
+  const queue: { el: any; col: number; row: number }[] = [];
+
+  for (const start of startNodes) {
+    if (visited.has(start.id)) continue;
+    queue.push({ el: start, col: 0, row: 0 });
+    visited.add(start.id);
+  }
+
+  let maxCol = 0;
+  while (queue.length > 0) {
+    const { el, col, row } = queue.shift()!;
+
+    // For convergence points (merge gateways), always take the latest column
+    // but allow row updates from the fan-out assignments
+    const existingCol = colMap.get(el.id);
+    if (existingCol !== undefined) {
+      // Keep the highest column (convergence: merge gateway needs to be after all branches)
+      if (col > existingCol) {
+        colMap.set(el.id, col);
+      }
+      continue; // Don't re-traverse outgoing — already processed
+    }
+
+    colMap.set(el.id, col);
+    rowMap.set(el.id, row);
+    if (col > maxCol) maxCol = col;
+
+    const targets = outgoing.get(el.id) || [];
+    const isGateway = el.type?.includes('Gateway');
+    const isBranching = isGateway && targets.length > 1;
+
+    if (isBranching) {
+      // Fan out branches vertically, centered on current row
+      // All targets get fanned — even if visited (they'll update col but not row)
+      const forwardTargets = targets.filter(t => !visited.has(t.target.id));
+
+      const branchCount = forwardTargets.length;
+      if (branchCount > 0) {
+        const startRow = row - ((branchCount - 1) * opts.branchSpacing) / 2;
+        forwardTargets.forEach((t, idx) => {
+          const branchRow = startRow + idx * opts.branchSpacing;
+          visited.add(t.target.id);
+          rowMap.set(t.target.id, branchRow); // Pre-assign row for fan-out
+          queue.push({ el: t.target, col: col + 1, row: branchRow });
+        });
+      }
+
+      // Loop-back targets: just update their column if needed
+      for (const t of targets) {
+        if (visited.has(t.target.id) && !forwardTargets.includes(t)) {
+          queue.push({ el: t.target, col: col + 1, row });
+        }
+      }
+    } else {
+      // Sequential: advance column, keep same row
+      for (const t of targets) {
+        if (!visited.has(t.target.id)) {
+          visited.add(t.target.id);
+          queue.push({ el: t.target, col: col + 1, row });
+        } else {
+          // Convergence: push to update column
+          queue.push({ el: t.target, col: col + 1, row });
+        }
+      }
+    }
+  }
+
+  // Handle merge gateways: align to center of incoming branches
+  for (const s of shapes) {
+    if (!s.type?.includes('Gateway')) continue;
+    const inc = (s.incoming || []).filter((c: any) => c.source?.parent === scope);
+    if (inc.length < 2) continue;
+    // This is a merge gateway — compute average row of sources
+    const sourceRows = inc
+      .map((c: any) => rowMap.get(c.source?.id))
+      .filter((r: any): r is number => r !== undefined);
+    if (sourceRows.length >= 2) {
+      if (opts.mergeAlignment === 'center') {
+        rowMap.set(s.id, sourceRows.reduce((a: number, b: number) => a + b, 0) / sourceRows.length);
+      } else {
+        rowMap.set(s.id, Math.min(...sourceRows));
+      }
+    }
+  }
+
+  // Convert column/row to pixel coordinates
+  const baseX = (scope.x || 0) + 60;
+  const baseY = (scope.y || 0) + (scope.height ? scope.height / 2 : 200);
+
+  let positioned = 0;
+  for (const s of shapes) {
+    const col = colMap.get(s.id);
+    const row = rowMap.get(s.id);
+    if (col === undefined || row === undefined) continue;
+
+    const elW = s.width || 36;
+    const elH = s.height || 36;
+    const targetX = baseX + col * (100 + opts.horizontalSpacing) + elW / 2;
+    const targetY = baseY + row + elH / 2;
+
+    const cx = s.x + elW / 2;
+    const cy = s.y + elH / 2;
+    const dx = targetX - cx;
+    const dy = targetY - cy;
+
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      try {
+        modeling.moveElements([s], { x: dx, y: dy });
+        positioned++;
+      } catch {
+        // Skip elements that fail to move
+      }
+    }
+  }
+
+  // Position boundary events on their host's edge
+  const boundaryEvents = allElements.filter((el: any) =>
+    el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
+  );
+  for (const be of boundaryEvents) {
+    const host = be.host || be.parent;
+    if (!host || !host.width) continue;
+    const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
+    const beCx = be.x + (be.width || 36) / 2;
+    const beCy = be.y + (be.height || 36) / 2;
+    const dx = pos.x - beCx;
+    const dy = pos.y - beCy;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      try {
+        modeling.moveElements([be], { x: dx, y: dy });
+        positioned++;
+      } catch { /* skip */ }
+    }
+  }
+
+  // Position boundary event TARGET tasks below their boundary event.
+  // Also find targets via the connections array (boundary event flows may
+  // not be in `connections` since they're filtered by parent scope).
+  const beFlows = allElements.filter((el: any) =>
+    el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
+  );
+  for (const conn of beFlows) {
+    const be = elementRegistry.get(conn.source.id);
+    const target = elementRegistry.get(conn.target?.id);
+    if (!be || !target || !target.width) continue;
+    const beCx = be.x + (be.width || 36) / 2;
+    const beBottom = be.y + (be.height || 36);
+    const targetW = target.width || 100;
+    const targetH = target.height || 80;
+    const targetCx = target.x + targetW / 2;
+    const targetCy = target.y + targetH / 2;
+    const desiredX = beCx;
+    const desiredY = beBottom + 60 + targetH / 2;
+    const dx = desiredX - targetCx;
+    const dy = desiredY - targetCy;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      try {
+        modeling.moveElements([target], { x: dx, y: dy });
+        positioned++;
+      } catch {
+        // Fallback: direct position update
+        target.x = desiredX - targetW / 2;
+        target.y = desiredY - targetH / 2;
+        positioned++;
+      }
+    }
+  }
+
+  // Route connections orthogonally
+  let routed = 0;
+  if (opts.flowRouting === 'orthogonal') {
+    for (const conn of connections) {
+      const src = conn.source, tgt = conn.target;
+      if (!src || !tgt) continue;
+
+      const srcCx = src.x + (src.width || 36) / 2;
+      const srcCy = src.y + (src.height || 36) / 2;
+      const tgtCx = tgt.x + (tgt.width || 36) / 2;
+      const tgtCy = tgt.y + (tgt.height || 36) / 2;
+      const srcRight = src.x + (src.width || 36);
+      const tgtLeft = tgt.x;
+
+      // Check if flow is a loop-back (target is to the left)
+      const isLoopBack = tgtCx <= srcCx;
+
+      let newWaypoints: { x: number; y: number }[];
+      if (isLoopBack) {
+        // Route below: source bottom → down → left → up → target bottom
+        const loopY = Math.max(srcCy, tgtCy) + (src.height || 80) / 2 + 60;
+        newWaypoints = [
+          { x: srcCx, y: srcCy + (src.height || 36) / 2 },
+          { x: srcCx, y: loopY },
+          { x: tgtCx, y: loopY },
+          { x: tgtCx, y: tgtCy + (tgt.height || 36) / 2 },
+        ];
+      } else if (Math.abs(srcCy - tgtCy) < 3) {
+        // Same y — straight horizontal
+        newWaypoints = [
+          { x: srcRight, y: srcCy },
+          { x: tgtLeft, y: tgtCy },
+        ];
+      } else {
+        // L-shaped routing
+        const midX = (srcRight + tgtLeft) / 2;
+        newWaypoints = [
+          { x: srcRight, y: srcCy },
+          { x: midX, y: srcCy },
+          { x: midX, y: tgtCy },
+          { x: tgtLeft, y: tgtCy },
+        ];
+      }
+
+      try {
+        if (typeof modeling.updateWaypoints === 'function') {
+          modeling.updateWaypoints(conn, newWaypoints);
+        } else {
+          conn.waypoints = newWaypoints;
+          const connDi = conn.di;
+          if (connDi?.waypoint) {
+            connDi.waypoint = newWaypoints.map(wp => {
+              return connDi.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
+            });
+          }
+        }
+        routed++;
+      } catch {
+        // Skip connections that fail to route
+      }
+    }
+  }
+
+  return { positioned, routed, elementCount: shapes.length };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1716,31 +2125,73 @@ async function validateLayout(
   params: Record<string, unknown>,
   services: BpmnServices
 ) {
-  const { elementRegistry, modeling } = services;
+  const { elementRegistry, modeling, canvas } = services;
   const scopeId = params.elementId as string | undefined;
   const autoFix = (params.autoFix as boolean) || false;
   const minSeverity = (params.severity as string) || 'warning';
 
+  // Wait for the rendering engine to finish positioning all elements.
+  // Boundary events in particular get default coordinates (e.g. 96, 58) on
+  // creation and are only moved to the host's perimeter during the next
+  // render cycle. Without this wait, we'd read stale default positions.
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+  /**
+   * Resolve an element to its rendered diagram shape with correct absolute
+   * coordinates. For boundary events, compute absolute position from the
+   * host element since the shape's own x/y may still hold stale defaults
+   * from creation (before the renderer repositioned it on the host perimeter).
+   */
+  const resolve = (el: any): any => {
+    if (!el?.id) return el;
+    const fresh = elementRegistry.get(el.id);
+    if (!fresh) return el;
+    // Boundary events: if position looks like defaults (small x/y far from host),
+    // compute from the host element's actual position instead.
+    if (fresh.type === 'bpmn:BoundaryEvent') {
+      // Always compute boundary event position from host element.
+      // The shape's own x/y may hold stale defaults from creation time.
+      const hostRef = fresh.host
+        || (fresh.businessObject?.attachedToRef && elementRegistry.get(fresh.businessObject.attachedToRef.id))
+        || fresh.parent;
+      const host = hostRef?.id ? (elementRegistry.get(hostRef.id) || hostRef) : hostRef;
+      if (host && host.width && host.height) {
+        const corrected = { ...fresh };
+        corrected.x = host.x + host.width / 2 - (fresh.width || 36) / 2;
+        corrected.y = host.y + host.height - (fresh.height || 36) / 2;
+        return corrected;
+      }
+    }
+    return fresh;
+  };
+
   const severityOrder: Record<string, number> = { error: 0, warning: 1, suggestion: 2 };
   const minLevel = severityOrder[minSeverity] ?? 1;
 
-  // Gather shapes and connections within scope
+  // Gather shapes and connections within scope.
+  // Resolve every element through elementRegistry.get() to get the latest
+  // rendered coordinates (especially important for boundary events).
   const allElements: any[] = elementRegistry.getAll();
-  const shapes = allElements.filter((el: any) => {
-    if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
-    if (el.waypoints) return false; // connections handled separately
-    if (scopeId && el.parent?.id !== scopeId && el.id !== scopeId) return false;
-    return true;
-  });
-  const connections = allElements.filter((el: any) => {
-    if (!el.waypoints) return false;
-    if (scopeId) {
-      const srcInScope = el.source?.parent?.id === scopeId || el.source?.id === scopeId;
-      const tgtInScope = el.target?.parent?.id === scopeId || el.target?.id === scopeId;
-      if (!srcInScope && !tgtInScope) return false;
-    }
-    return true;
-  });
+  const shapes = allElements
+    .filter((el: any) => {
+      if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
+      if (el.waypoints) return false;
+      if (scopeId && el.parent?.id !== scopeId && el.id !== scopeId) return false;
+      return true;
+    })
+    .map((el: any) => resolve(el));
+  const connections = allElements
+    .filter((el: any) => {
+      if (!el.waypoints) return false;
+      if (scopeId) {
+        const src = resolve(el.source), tgt = resolve(el.target);
+        const srcInScope = src?.parent?.id === scopeId || src?.id === scopeId;
+        const tgtInScope = tgt?.parent?.id === scopeId || tgt?.id === scopeId;
+        if (!srcInScope && !tgtInScope) return false;
+      }
+      return true;
+    })
+    .map((el: any) => resolve(el));
 
   const issues: LayoutIssue[] = [];
 
@@ -1749,7 +2200,7 @@ async function validateLayout(
   // 1. outside_parent — element outside its parent subprocess/pool bounds
   //    Skip root process / collaboration — they have no meaningful visual bounds
   for (const el of shapes) {
-    const parent = el.parent;
+    const parent = resolve(el.parent);
     if (!parent || !parent.width) continue;
     // Root process and collaboration elements aren't visual containers
     const parentType = parent.type || parent.businessObject?.$type;
@@ -1792,10 +2243,13 @@ async function validateLayout(
   }
 
   // 3. disconnected_flow — waypoints don't connect to source/target edges
+  //    Always resolve source/target via elementRegistry to get absolute canvas
+  //    coordinates (conn.source can hold stale/relative coords for boundary events).
   for (const conn of connections) {
     const wps = conn.waypoints;
     if (!wps || wps.length < 2) continue;
-    const src = conn.source, tgt = conn.target;
+    const src = resolve(conn.source);
+    const tgt = resolve(conn.target);
     if (!src || !tgt) continue;
     const srcRect = elRect(src);
     const tgtRect = elRect(tgt);
@@ -1812,7 +2266,7 @@ async function validateLayout(
         message: `Flow '${elName(conn)}' waypoints don't connect to source/target edges`,
         fix: { tool: 'set_flow_waypoints', params: {
           flowId: conn.id,
-          waypoints: [{ x: srcC.x + (srcRect.width || 0) / 2, y: srcC.y }, { x: tgtC.x - (tgtRect.width || 0) / 2, y: tgtC.y }]
+          waypoints: [{ x: Math.round(srcC.x + (srcRect.width || 0) / 2), y: Math.round(srcC.y) }, { x: Math.round(tgtC.x - (tgtRect.width || 0) / 2), y: Math.round(tgtC.y) }]
         }},
       });
     }
@@ -1829,8 +2283,9 @@ async function validateLayout(
       if (!segmentIsOrthogonal(wps[k], wps[k + 1])) { hasDiagonal = true; break; }
     }
     if (hasDiagonal) {
-      // Generate orthogonal routing: from source right edge → target left edge with one bend
-      const src = conn.source, tgt = conn.target;
+      // Generate orthogonal routing — resolve via registry for correct coords
+      const src = resolve(conn.source);
+      const tgt = resolve(conn.target);
       if (!src || !tgt) continue;
       const srcC = elCenter(src), tgtC = elCenter(tgt);
       const srcRight = src.x + (src.width || 0);
@@ -1856,7 +2311,7 @@ async function validateLayout(
     if (bo?.$type !== 'bpmn:SubProcess') continue;
     const isExpanded = el.isExpanded ?? el.di?.isExpanded ?? false;
     if (!isExpanded) continue;
-    const children = (el.children || []).filter((c: any) => c.type !== 'label' && !c.waypoints);
+    const children = (el.children || []).map((c: any) => resolve(c)).filter((c: any) => c.type !== 'label' && !c.waypoints);
     if (children.length === 0) continue;
     const pr = elRect(el);
     let allInside = true;
@@ -1884,27 +2339,95 @@ async function validateLayout(
     }
   }
 
-  // 6. flow_crosses_element — a flow routes through an unrelated element
+  // 5b. stale_boundary_flow — boundary event flows with stale waypoints
+  //     After build_process, boundary events are positioned correctly but
+  //     their outgoing flows retain the default creation-time waypoints.
+  //     Detect and fix these before the general flow_crosses_element check.
+  const staleBoundaryFlowIds = new Set<string>();
   for (const conn of connections) {
+    const src = conn.source ? elementRegistry.get(conn.source.id) : null;
+    if (!src || src.type !== 'bpmn:BoundaryEvent') continue;
     const wps = conn.waypoints;
     if (!wps || wps.length < 2) continue;
-    const srcId = conn.source?.id, tgtId = conn.target?.id;
+    // Check if first waypoint is far from the boundary event's actual position
+    const firstWp = wps[0];
+    const srcRect = elRect(resolve(conn.source));
+    if (distToRect(firstWp, srcRect) > 50) {
+      // Stale waypoints — generate fix from host-computed position
+      const resolvedSrc = resolve(conn.source);
+      const resolvedTgt = resolve(conn.target);
+      if (resolvedSrc && resolvedTgt) {
+        const beCenterX = resolvedSrc.x + (resolvedSrc.width || 36) / 2;
+        const beBottom = resolvedSrc.y + (resolvedSrc.height || 36);
+        const tgtCenterY = resolvedTgt.y + (resolvedTgt.height || 80) / 2;
+        const tgtLeft = resolvedTgt.x;
+        staleBoundaryFlowIds.add(conn.id);
+        issues.push({
+          severity: 'error', type: 'stale_boundary_flow',
+          elementIds: [conn.id],
+          message: `Flow from boundary event '${elName(resolvedSrc)}' has stale waypoints`,
+          fix: { tool: 'set_flow_waypoints', params: {
+            flowId: conn.id,
+            waypoints: [
+              { x: Math.round(beCenterX), y: Math.round(beBottom) },
+              { x: Math.round(beCenterX), y: Math.round(tgtCenterY) },
+              { x: Math.round(tgtLeft), y: Math.round(tgtCenterY) },
+            ],
+          }},
+        });
+      }
+    }
+  }
+
+  // 6. flow_crosses_element — a flow routes through an unrelated element
+  for (const conn of connections) {
+    if (staleBoundaryFlowIds.has(conn.id)) continue; // Already handled above
+    const wps = conn.waypoints;
+    if (!wps || wps.length < 2) continue;
+    const src = resolve(conn.source);
+    const tgt = resolve(conn.target);
+    const srcId = src?.id, tgtId = tgt?.id;
     for (const shape of shapes) {
       if (!shape.width || shape.id === srcId || shape.id === tgtId) continue;
-      if (shape.parent === conn.source || shape.parent === conn.target) continue;
-      // Skip containers (subprocesses, pools) — flows route through them normally
+      if (shape.parent === src || shape.parent === tgt) continue;
       if (shape.businessObject?.$type === 'bpmn:SubProcess' || shape.type === 'bpmn:Participant') continue;
       const rect = elRect(shape);
+      let crosses = false;
       for (let k = 0; k < wps.length - 1; k++) {
-        if (segmentIntersectsRect(wps[k], wps[k + 1], rect)) {
-          issues.push({
-            severity: 'warning', type: 'flow_crosses_element',
-            elementIds: [conn.id, shape.id],
-            message: `Flow '${elName(conn)}' routes through '${elName(shape)}'`,
-            fix: null,
-          });
-          break;
-        }
+        if (segmentIntersectsRect(wps[k], wps[k + 1], rect)) { crosses = true; break; }
+      }
+      if (crosses && src && tgt) {
+        // Compute orthogonal waypoints that route around the obstruction
+        const srcC = elCenter(src);
+        const tgtC = elCenter(tgt);
+        const srcRight = src.x + (src.width || 36);
+        const tgtLeft = tgt.x;
+        const pad = 20;
+        const obstTop = rect.y - pad;
+        const obstBottom = rect.y + rect.height + pad;
+
+        // Decide: route above or below based on which side has more space
+        const spaceAbove = Math.abs(srcC.y - obstTop);
+        const spaceBelow = Math.abs(obstBottom - srcC.y);
+        const routeY = spaceAbove <= spaceBelow ? obstTop : obstBottom;
+        const midX = (srcRight + tgtLeft) / 2;
+
+        const fixWaypoints = [
+          { x: srcRight, y: srcC.y },
+          { x: midX, y: srcC.y },
+          { x: midX, y: routeY },
+          { x: midX + (tgtLeft - srcRight) / 4, y: routeY },
+          { x: midX + (tgtLeft - srcRight) / 4, y: tgtC.y },
+          { x: tgtLeft, y: tgtC.y },
+        ];
+
+        issues.push({
+          severity: 'warning', type: 'flow_crosses_element',
+          elementIds: [conn.id, shape.id],
+          message: `Flow '${elName(conn)}' routes through '${elName(shape)}'`,
+          fix: { tool: 'set_flow_waypoints', params: { flowId: conn.id, waypoints: fixWaypoints.map(p => ({ x: Math.round(p.x), y: Math.round(p.y) })) } },
+        });
+        break;
       }
     }
   }
@@ -1933,7 +2456,8 @@ async function validateLayout(
   // 8. misaligned — connected elements with nearly-matching y (or x) coordinates
   const ALIGN_TOLERANCE = 8;
   for (const conn of connections) {
-    const src = conn.source, tgt = conn.target;
+    const src = resolve(conn.source);
+    const tgt = resolve(conn.target);
     if (!src || !tgt || !src.width || !tgt.width) continue;
     const srcC = elCenter(src), tgtC = elCenter(tgt);
     const dy = Math.abs(srcC.y - tgtC.y);
@@ -1979,8 +2503,8 @@ async function validateLayout(
   const SPACING_TOLERANCE = 15;
   for (const el of shapes) {
     const outgoing = (el.outgoing || [])
-      .filter((c: any) => c.target && c.target.width)
-      .map((c: any) => c.target);
+      .map((c: any) => resolve(c.target))
+      .filter((t: any) => t && t.width);
     if (outgoing.length < 2) continue;
     // Sort targets by x position
     outgoing.sort((a: any, b: any) => a.x - b.x);
@@ -2015,8 +2539,8 @@ async function validateLayout(
     if (!el.type?.includes('Gateway')) continue;
     const gwC = elCenter(el);
     const targets = (el.outgoing || [])
-      .filter((c: any) => c.target && c.target.width)
-      .map((c: any) => c.target)
+      .map((c: any) => resolve(c.target))
+      .filter((t: any) => t && t.width)
       .filter((t: any) => elCenter(t).x > gwC.x); // exclude loop-backs
     if (targets.length < 2) continue;
     const ys = targets.map((t: any) => elCenter(t).y);
@@ -2040,8 +2564,9 @@ async function validateLayout(
   // 12. orphaned_annotation — annotation far from its associated element
   for (const conn of connections) {
     if (conn.type !== 'bpmn:Association') continue;
-    const annotation = conn.source?.type === 'bpmn:TextAnnotation' ? conn.source : conn.target;
-    const assocEl = conn.source?.type === 'bpmn:TextAnnotation' ? conn.target : conn.source;
+    const rSrc = resolve(conn.source), rTgt = resolve(conn.target);
+    const annotation = rSrc?.type === 'bpmn:TextAnnotation' ? rSrc : rTgt;
+    const assocEl = rSrc?.type === 'bpmn:TextAnnotation' ? rTgt : rSrc;
     if (!annotation || !assocEl || !annotation.width || !assocEl.width) continue;
     const dist = Math.hypot(
       elCenter(annotation).x - elCenter(assocEl).x,

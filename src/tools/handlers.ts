@@ -14,7 +14,7 @@ import {
   resizeElementSchema,
   setFlowWaypointsSchema, autoLayoutSchema, getElementBoundsSchema,
   cloneElementSchema, batchOperationsSchema, addGroupSchema,
-  patchElementSchema, buildProcessSchema, validateLayoutSchema,
+  patchElementSchema, buildProcessSchema, validateLayoutSchema, exportImageSchema,
   listOpenDiagramsSchema, switchDiagramSchema,
 } from './registry';
 
@@ -482,58 +482,60 @@ async function switchDiagram(
 }
 
 /**
- * Applies the Modeler's built-in auto-layout to the current diagram.
- */
-async function autoLayout(
-  params: Record<string, unknown>
-): Promise<CallToolResult> {
-  autoLayoutSchema.parse(params);
-  try {
-    const result = await executeInRenderer(
-      `window.__mcpTabManager`
-      + ` ? window.__mcpTabManager.autoLayout()`
-      + ` : Promise.reject(new Error('Tab manager not initialized — ensure the plugin is loaded and a diagram has been opened'))`
-    );
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    };
-  }
-}
-
-/**
- * Strips a tool response down to essential IDs and status fields.
+ * Strips a tool response down to essential information.
  * Applied when the caller passes `compact: true`.
+ *
+ * Strategy:
+ * - Mutations (move, resize, connect, delete, etc.): return {ok: true}
+ * - build_process: return flat idMap only
+ * - batch_operations: return {ok: N} where N is the number of operations
+ * - list_elements: return array of {id, type}
+ * - validate_layout / get_element / get_element_bounds: keep full detail (that IS the payload)
+ * - Errors: always keep full detail
  */
-function compactResult(result: CallToolResult): CallToolResult {
+function compactResult(result: CallToolResult, toolName?: string): CallToolResult {
   if (result.isError) return result;
   try {
     const data = JSON.parse(result.content[0].text);
-    const compacted: Record<string, unknown> = {};
+
+    // Read-oriented tools: keep full response (the data IS the purpose)
+    const keepFullTools = [
+      'validate_layout', 'get_element', 'get_element_bounds', 'get_diagram_xml',
+      'list_open_diagrams',
+    ];
+    if (toolName && keepFullTools.includes(toolName)) return result;
+
+    // build_process: return just the idMap (only new information)
+    if (data.idMap) {
+      return { content: [{ type: 'text', text: JSON.stringify(data.idMap) }] };
+    }
+
+    // batch_operations: return count of operations
+    if (Array.isArray(data.results)) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: data.results.length }) }] };
+    }
+
+    // list_elements: trim to id array
+    if (Array.isArray(data.elements)) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ids: data.elements.map((el: any) => el.id) }) }] };
+    }
+
+    // Tabs
+    if (Array.isArray(data.tabs)) {
+      return { content: [{ type: 'text', text: JSON.stringify({ tabs: data.tabs.map((t: any) => ({ id: t.id, name: t.name })) }) }] };
+    }
+
+    // Issues (validate_layout) — keep full
+    if (Array.isArray(data.issues)) return result;
+
+    // Everything else (mutations): return {ok: true} + any ID fields
+    const compacted: Record<string, unknown> = { ok: true };
     for (const key of Object.keys(data)) {
-      if (key.endsWith('Id') || key === 'id' || key === 'idMap'
-        || key === 'deleted' || key === 'imported' || key === 'saved'
-        || key === 'applied' || key === 'switched' || key === 'patched'
-        || key === 'error' || key === 'results' || key === 'childIds') {
+      if (key.endsWith('Id') || key === 'idMap' || key === 'childIds') {
         compacted[key] = data[key];
       }
     }
-    // Compact list_elements: trim elements to id + type
-    if (Array.isArray(data.elements)) {
-      compacted.elements = data.elements.map((el: any) => ({ id: el.id, type: el.type }));
-    }
-    // Compact tabs
-    if (Array.isArray(data.tabs)) {
-      compacted.tabs = data.tabs.map((t: any) => ({ id: t.id, name: t.name }));
-    }
-    return {
-      content: [{ type: 'text', text: JSON.stringify(compacted) }],
-    };
+    return { content: [{ type: 'text', text: JSON.stringify(compacted) }] };
   } catch {
     return result;
   }
@@ -590,10 +592,6 @@ export async function dispatch(
         result = await switchDiagram(params);
         break;
 
-      case 'auto_layout':
-        result = await autoLayout(params);
-        break;
-
       case 'add_start_event':
       case 'add_task':
       case 'add_end_event':
@@ -625,7 +623,9 @@ export async function dispatch(
       case 'add_group':
       case 'patch_element':
       case 'build_process':
-      case 'validate_layout': {
+      case 'validate_layout':
+      case 'auto_layout':
+      case 'export_image': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -658,6 +658,8 @@ export async function dispatch(
         else if (toolName === 'patch_element') patchElementSchema.parse(params);
         else if (toolName === 'build_process') buildProcessSchema.parse(params);
         else if (toolName === 'validate_layout') validateLayoutSchema.parse(params);
+        else if (toolName === 'auto_layout') autoLayoutSchema.parse(params);
+        else if (toolName === 'export_image') exportImageSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it
@@ -689,6 +691,33 @@ export async function dispatch(
             ],
             isError: true,
           };
+        }
+
+        // export_image: renderer returns SVG string or PNG base64, we write the file
+        if (toolName === 'export_image') {
+          result = await ipcBridge(toolName, params);
+          try {
+            const resultText = JSON.parse(result.content[0].text);
+            if (resultText.data && resultText.filePath) {
+              if (resultText.format === 'png') {
+                // PNG: data is base64-encoded
+                const buf = Buffer.from(resultText.data, 'base64');
+                fs.writeFileSync(resultText.filePath, buf);
+              } else {
+                // SVG: data is a string
+                fs.writeFileSync(resultText.filePath, resultText.data, 'utf-8');
+              }
+              result = {
+                content: [{ type: 'text', text: JSON.stringify({
+                  saved: true, filePath: resultText.filePath, format: resultText.format,
+                  width: resultText.width, height: resultText.height,
+                }) }],
+              };
+            }
+          } catch {
+            // If parsing/writing fails, return the original result
+          }
+          break;
         }
 
         // save_diagram: renderer returns XML, we write the file on the Node.js side
@@ -727,7 +756,7 @@ export async function dispatch(
         };
     }
 
-    return compact ? compactResult(result) : result;
+    return compact ? compactResult(result, toolName) : result;
   } catch (err) {
     // Catch Zod validation errors and return them as proper MCP error results
     if (err instanceof z.ZodError) {
