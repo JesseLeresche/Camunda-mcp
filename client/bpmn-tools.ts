@@ -14,6 +14,7 @@ interface BpmnServices {
   moddle: any;
   bpmnFactory: any;
   injector: any;
+  commandStack: any;
 }
 
 declare global {
@@ -29,14 +30,20 @@ function McpCommandHandler(
   canvas: any,
   moddle: any,
   bpmnFactory: any,
-  injector: any
+  injector: any,
+  commandStack: any
 ) {
   console.log('[camunda-mcp] McpCommandHandler initialized');
+
+  // Register compound command handler for grouping operations into a single undo step
+  commandStack.registerHandler('mcp.compound', McpCompoundHandler);
+
+  const services: BpmnServices = { modeling, elementRegistry, canvas, moddle, bpmnFactory, injector, commandStack };
 
   window.__mcpDispatch = async (tool: string, params: Record<string, unknown>) => {
     console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
     try {
-      const rawResult = await dispatchRendererTool(tool, params, { modeling, elementRegistry, canvas, moddle, bpmnFactory, injector });
+      const rawResult = await dispatchRendererTool(tool, params, services);
       return {
         content: [{ type: 'text', text: JSON.stringify(rawResult) }],
       };
@@ -53,7 +60,23 @@ function McpCommandHandler(
   console.log('[camunda-mcp] window.__mcpDispatch registered');
 }
 
-(McpCommandHandler as any).$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas', 'moddle', 'bpmnFactory', 'injector'];
+(McpCommandHandler as any).$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas', 'moddle', 'bpmnFactory', 'injector', 'commandStack'];
+
+/**
+ * Command handler that groups nested modeling commands into a single undo step.
+ * Usage: commandStack.execute('mcp.compound', { fn: () => { ...modeling calls... } })
+ * All modeling.* calls inside fn() become nested commands that undo together.
+ */
+function McpCompoundHandler() {}
+McpCompoundHandler.prototype.preExecute = function(context: any) {
+  if (typeof context.fn === 'function') {
+    context.fn();
+  }
+};
+McpCompoundHandler.prototype.execute = function(context: any) {
+  return context;
+};
+McpCompoundHandler.prototype.revert = function() {};
 
 /**
  * Resolves the parent element for shape creation.
@@ -892,34 +915,7 @@ function moveElement(
   const deltaX = newX - currentCenterX;
   const deltaY = newY - currentCenterY;
 
-  try {
-    modeling.moveElements([element], { x: deltaX, y: deltaY });
-  } catch (err: any) {
-    // bpmn-js may throw on connection layout recalculation
-    // (e.g. "expected between [1, 2] circle -> line intersections")
-    console.warn(`[camunda-mcp] moveElement layout error for ${elementId}:`, err?.message);
-
-    // The move may not have applied — force the position directly
-    element.x = element.x + deltaX;
-    element.y = element.y + deltaY;
-
-    // Repair broken connections with simple two-point direct waypoints
-    const allConns = [...(element.incoming || []), ...(element.outgoing || [])];
-    for (const conn of allConns) {
-      try {
-        const src = conn.source, tgt = conn.target;
-        if (!src || !tgt) continue;
-        const srcCx = src.x + (src.width || 36) / 2;
-        const srcCy = src.y + (src.height || 36) / 2;
-        const tgtCx = tgt.x + (tgt.width || 36) / 2;
-        const tgtCy = tgt.y + (tgt.height || 36) / 2;
-        conn.waypoints = [
-          { x: srcCx + (src.width || 36) / 2, y: srcCy },
-          { x: tgtCx - (tgt.width || 36) / 2, y: tgtCy },
-        ];
-      } catch { /* skip */ }
-    }
-  }
+  modeling.moveElements([element], { x: deltaX, y: deltaY });
 
   return {
     elementId,
@@ -1170,25 +1166,14 @@ function setFlowWaypoints(
 
   const newWaypoints = waypoints.map(wp => ({ x: wp.x, y: wp.y }));
 
-  // Use modeling.updateWaypoints if available, otherwise fall back to layoutConnection
   if (typeof modeling.updateWaypoints === 'function') {
     modeling.updateWaypoints(connection, newWaypoints);
   } else {
-    // Direct update: set waypoints and notify diagram-js
-    connection.waypoints = newWaypoints;
-    // Update DI waypoints to persist in XML (di is on the diagram element, not BO)
-    const connDi = connection.di;
-    if (connDi && connDi.waypoint) {
-      connDi.waypoint = newWaypoints.map((wp: { x: number; y: number }) => {
-        const point = connDi.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
-        return point;
-      });
-    }
-    // Fire change event so the canvas re-renders
-    const eventBus = (modeling as any)._eventBus || (modeling as any).eventBus;
-    if (eventBus) {
-      eventBus.fire('element.changed', { element: connection });
-    }
+    // Fall back to layoutConnection which goes through the command stack
+    modeling.layoutConnection(connection, {
+      connectionStart: newWaypoints[0],
+      connectionEnd: newWaypoints[newWaypoints.length - 1],
+    });
   }
 
   return {
@@ -1369,28 +1354,96 @@ function cloneElement(
   return result;
 }
 
+// Tools that are async and cannot be dispatched synchronously inside a compound
+const ASYNC_TOOLS = new Set([
+  'get_diagram_xml', 'import_xml', 'save_diagram', 'export_image',
+  'build_process', 'auto_layout', 'batch_operations',
+]);
+
+/**
+ * Synchronous dispatch for tools that don't need async execution.
+ * Used inside commandStack compound commands where async would break nesting.
+ */
+function dispatchRendererToolSync(
+  tool: string,
+  params: Record<string, unknown>,
+  services: BpmnServices
+): any {
+  switch (tool) {
+    case 'add_start_event':      return addStartEvent(params, services);
+    case 'add_task':             return addTask(params, services);
+    case 'add_end_event':        return addEndEvent(params, services);
+    case 'connect_elements':     return connectElements(params, services);
+    case 'link_form_to_task':    return linkFormToTask(params, services);
+    case 'add_gateway':          return addGateway(params, services);
+    case 'add_event':            return addEvent(params, services);
+    case 'add_subprocess':       return addSubprocess(params, services);
+    case 'set_properties':       return setProperties(params, services);
+    case 'set_io_mapping':       return setIoMapping(params, services);
+    case 'set_task_headers':     return setTaskHeaders(params, services);
+    case 'list_elements':        return listElements(params, services);
+    case 'get_element':          return getElement(params, services);
+    case 'delete_element':       return deleteElement(params, services);
+    case 'move_element':         return moveElement(params, services);
+    case 'add_participant':      return addParticipant(params, services);
+    case 'add_lane':             return addLane(params, services);
+    case 'add_end_event_typed':  return addEndEventTyped(params, services);
+    case 'add_message_flow':     return addMessageFlow(params, services);
+    case 'add_annotation':       return addAnnotation(params, services);
+    case 'resize_element':       return resizeElement(params, services);
+    case 'set_flow_waypoints':   return setFlowWaypoints(params, services);
+    case 'get_element_bounds':   return getElementBounds(params, services);
+    case 'clone_element':        return cloneElement(params, services);
+    case 'add_group':            return addGroup(params, services);
+    case 'patch_element':        return patchElement(params, services);
+    case 'validate_layout':      return validateLayout(params, services);
+    default:
+      throw new Error(`Tool "${tool}" cannot be dispatched synchronously`);
+  }
+}
+
 async function batchOperations(
   params: Record<string, unknown>,
   services: BpmnServices
 ) {
+  const { commandStack } = services;
   const operations = params.operations as Array<{ tool: string; params: Record<string, unknown> }>;
   const results: any[] = [];
 
-  for (let i = 0; i < operations.length; i++) {
-    const op = operations[i];
+  // If all operations are sync-safe, run them in a single undoable compound
+  const allSync = operations.every(op => !ASYNC_TOOLS.has(op.tool));
 
-    // Resolve $ref:N placeholders in params
-    const resolvedParams = resolveRefs(op.params, results);
-
-    try {
-      const result = await dispatchRendererTool(op.tool, resolvedParams, services);
-      results.push(result);
-    } catch (err: any) {
-      return {
-        error: `Operation ${i} (${op.tool}) failed: ${err.message}`,
-        failedIndex: i,
-        results,
-      };
+  if (allSync) {
+    let batchError: any = null;
+    commandStack.execute('mcp.compound', { fn: () => {
+      for (let i = 0; i < operations.length; i++) {
+        const op = operations[i];
+        const resolvedParams = resolveRefs(op.params, results);
+        try {
+          const result = dispatchRendererToolSync(op.tool, resolvedParams, services);
+          results.push(result);
+        } catch (err: any) {
+          batchError = { error: `Operation ${i} (${op.tool}) failed: ${err.message}`, failedIndex: i, results };
+          throw err; // abort the compound
+        }
+      }
+    }});
+    if (batchError) return batchError;
+  } else {
+    // Fallback: mixed sync/async — each operation is a separate undo step
+    for (let i = 0; i < operations.length; i++) {
+      const op = operations[i];
+      const resolvedParams = resolveRefs(op.params, results);
+      try {
+        const result = await dispatchRendererTool(op.tool, resolvedParams, services);
+        results.push(result);
+      } catch (err: any) {
+        return {
+          error: `Operation ${i} (${op.tool}) failed: ${err.message}`,
+          failedIndex: i,
+          results,
+        };
+      }
     }
   }
 
@@ -1568,7 +1621,7 @@ async function buildProcess(
   params: Record<string, unknown>,
   services: BpmnServices
 ) {
-  const { modeling, canvas, elementRegistry, moddle, bpmnFactory } = services;
+  const { modeling, canvas, elementRegistry, moddle, bpmnFactory, commandStack } = services;
   const elements = params.elements as any[];
   const flows = (params.flows as any[]) || [];
   const autoLayoutFlag = (params.autoLayout as boolean) || false;
@@ -1577,7 +1630,11 @@ async function buildProcess(
   if (!root) throw new Error('No diagram is currently open');
 
   const idMap: Record<string, string> = {};
+  const flowIds: string[] = [];
   let nextX = DEFAULT_START_X;
+
+  // Wrap all element + flow creation in a single undoable compound command
+  commandStack.execute('mcp.compound', { fn: () => {
 
   // Phase 1: Create all elements
   for (const el of elements) {
@@ -1701,7 +1758,6 @@ async function buildProcess(
   }
 
   // Phase 2: Create all flows
-  const flowIds: string[] = [];
   for (const flow of flows) {
     const sourceRealId = idMap[flow.from];
     const targetRealId = idMap[flow.to];
@@ -1735,7 +1791,9 @@ async function buildProcess(
     flowIds.push(connection.id);
   }
 
-  // Phase 3: Auto-layout if requested — use the smart layout engine
+  }}); // end mcp.compound — all elements + flows are a single undo step
+
+  // Phase 3: Auto-layout if requested (separate undo step — async)
   if (autoLayoutFlag) {
     try {
       await smartAutoLayout({ diagramId: '' }, services);
@@ -1775,7 +1833,7 @@ async function smartAutoLayout(
   params: Record<string, unknown>,
   services: BpmnServices
 ) {
-  const { modeling, elementRegistry, canvas } = services;
+  const { modeling, elementRegistry, canvas, commandStack } = services;
   const scopeId = params.elementId as string | undefined;
   const userOpts = (params.options as Partial<LayoutOpts>) || {};
   const opts: LayoutOpts = { ...DEFAULT_LAYOUT_OPTS, ...userOpts };
@@ -1920,7 +1978,12 @@ async function smartAutoLayout(
   const baseX = (scope.x || 0) + 60;
   const baseY = (scope.y || 0) + (scope.height ? scope.height / 2 : 200);
 
+  // Wrap all positioning + routing in a single undoable compound command
   let positioned = 0;
+  let routed = 0;
+
+  commandStack.execute('mcp.compound', { fn: () => {
+
   for (const s of shapes) {
     const col = colMap.get(s.id);
     const row = rowMap.get(s.id);
@@ -1928,8 +1991,8 @@ async function smartAutoLayout(
 
     const elW = s.width || 36;
     const elH = s.height || 36;
-    const targetX = baseX + col * (100 + opts.horizontalSpacing) + elW / 2;
-    const targetY = baseY + row + elH / 2;
+    const targetX = baseX + col * (100 + opts.horizontalSpacing);
+    const targetY = baseY + row;
 
     const cx = s.x + elW / 2;
     const cy = s.y + elH / 2;
@@ -1990,17 +2053,11 @@ async function smartAutoLayout(
       try {
         modeling.moveElements([target], { x: dx, y: dy });
         positioned++;
-      } catch {
-        // Fallback: direct position update
-        target.x = desiredX - targetW / 2;
-        target.y = desiredY - targetH / 2;
-        positioned++;
-      }
+      } catch { /* skip — no direct mutation fallback */ }
     }
   }
 
   // Route connections orthogonally
-  let routed = 0;
   if (opts.flowRouting === 'orthogonal') {
     for (const conn of connections) {
       const src = conn.source, tgt = conn.target;
@@ -2047,13 +2104,10 @@ async function smartAutoLayout(
         if (typeof modeling.updateWaypoints === 'function') {
           modeling.updateWaypoints(conn, newWaypoints);
         } else {
-          conn.waypoints = newWaypoints;
-          const connDi = conn.di;
-          if (connDi?.waypoint) {
-            connDi.waypoint = newWaypoints.map(wp => {
-              return connDi.waypoint[0].$model.create('dc:Point', { x: wp.x, y: wp.y });
-            });
-          }
+          modeling.layoutConnection(conn, {
+            connectionStart: newWaypoints[0],
+            connectionEnd: newWaypoints[newWaypoints.length - 1],
+          });
         }
         routed++;
       } catch {
@@ -2061,6 +2115,8 @@ async function smartAutoLayout(
       }
     }
   }
+
+  }}); // end mcp.compound — all position + route changes are a single undo step
 
   return { positioned, routed, elementCount: shapes.length };
 }

@@ -1,6 +1,6 @@
 # Camunda Desktop Modeler MCP Plugin
 
-**v1.2.0**
+**v1.3.0**
 
 ## Overview
 
@@ -9,6 +9,8 @@ This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.
 The plugin ships with 41 tools covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms.
 
 **Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `patch_element` tool updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `list_elements` tool supports field selection and subprocess filtering.
+
+**Undo/Redo support:** All tool operations integrate with the Modeler's command stack. Compound operations (`build_process`, `auto_layout`, `batch_operations`) are grouped into a single undo step — press Ctrl+Z once to undo an entire process build or layout change.
 
 ## Getting Started
 

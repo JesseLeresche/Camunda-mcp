@@ -90,6 +90,16 @@ Do **not** use `move_element` to fix layout — it moves the shape but leaves wa
 
 ---
 
+## Auto-Layout Center Alignment
+
+When using `auto_layout` or positioning elements around gateway branches:
+
+- **Elements before a branching gateway** (Start, tasks, preceding gateways) must be vertically centered between the branches — align by element **center**, not by top-left corner
+- **Elements on a branch** stay at that branch's Y level, also aligned by center
+- Since events (36px), gateways (50px), and tasks (80px) have different heights, never add height offsets when computing target positions — use the element's center coordinate directly to ensure alignment across types
+
+---
+
 ## Gateway Patterns
 
 ### Exclusive (XOR) — Decision Point
