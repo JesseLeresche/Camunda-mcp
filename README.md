@@ -129,10 +129,51 @@ Set the `MCP_API_KEY` environment variable to enable Bearer token authentication
 ## Prerequisites
 
 - **Camunda Desktop Modeler** v5.x (Electron-based)
-- **Node.js** >= 20
-- **npm** >= 9
+- **Node.js** >= 20 and **npm** >= 9 *(only required if building from source)*
 
 ## Installation
+
+Pick one of the two installation paths below.
+
+### Option A — Install from a pre-built release (no Node.js / npm required)
+
+1. **Download the latest release archive** from the [Releases page](https://github.com/JesseLeresche/Camunda-mcp/releases/latest):
+
+   - `camunda-mcp-v<version>.zip` (Windows / macOS)
+   - `camunda-mcp-v<version>.tar.gz` (macOS / Linux)
+
+   Each archive ships with the pre-compiled `dist/` and `client/dist/` bundles, so no build step is needed.
+
+2. **Extract the archive** somewhere stable (e.g. `~/camunda-mcp/`). On macOS / Linux:
+
+   ```bash
+   mkdir -p ~/camunda-mcp
+   tar -xzf camunda-mcp-v*.tar.gz -C ~/camunda-mcp --strip-components=1
+   ```
+
+   On Windows, right-click the `.zip` and choose **Extract All...** to `%USERPROFILE%\camunda-mcp\`.
+
+3. **Copy (or symlink) the extracted folder into the Camunda Modeler plugins directory:**
+
+   ```bash
+   # macOS — copy
+   cp -R ~/camunda-mcp ~/Library/Application\ Support/camunda-modeler/resources/plugins/camunda-mcp
+
+   # macOS — or symlink
+   ln -s ~/camunda-mcp ~/Library/Application\ Support/camunda-modeler/resources/plugins/camunda-mcp
+
+   # Linux
+   cp -R ~/camunda-mcp ~/.config/camunda-modeler/resources/plugins/camunda-mcp
+
+   # Windows (PowerShell)
+   Copy-Item -Recurse "$env:USERPROFILE\camunda-mcp" "$env:APPDATA\camunda-modeler\resources\plugins\camunda-mcp"
+   ```
+
+   If the `resources/plugins/` directory does not exist yet, create it first.
+
+4. **Restart the Camunda Desktop Modeler.** The plugin will load automatically. Check the **Plugins** menu for "MCP Server: Running (port 3100)".
+
+### Option B — Build from source
 
 1. **Clone and install dependencies:**
 
@@ -169,7 +210,9 @@ Set the `MCP_API_KEY` environment variable to enable Bearer token authentication
 
 ## MCP Client Configuration
 
-Add the following to your project's `.mcp.json` (Claude Code / Claude Desktop):
+### Claude Code / Claude Desktop
+
+Add the following to your project's `.mcp.json`:
 
 ```json
 {
@@ -181,6 +224,27 @@ Add the following to your project's `.mcp.json` (Claude Code / Claude Desktop):
   }
 }
 ```
+
+### Kiro
+
+Add the following to your Kiro MCP config (`~/.kiro/settings/mcp.json` for user-level, or `.kiro/settings/mcp.json` in the workspace root):
+
+```json
+{
+  "mcpServers": {
+    "camunda-modeler": {
+      "type": "http",
+      "url": "http://localhost:3100/mcp",
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+Set `disabled: true` to temporarily turn the server off without removing the entry. Populate `autoApprove` with tool names (e.g. `["list_elements", "get_element"]`) to skip the approval prompt for safe, read-only calls.
+
+### Port configuration
 
 The port defaults to `3100` and can be changed by setting the `MCP_PORT` environment variable before launching the Modeler. If port 3100 is in use, the server automatically retries up to 3 consecutive ports (3100, 3101, 3102).
 
