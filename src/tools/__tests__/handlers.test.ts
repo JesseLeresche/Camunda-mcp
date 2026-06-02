@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { dispatch } from '../handlers';
+import { dispatch, resolveFacade } from '../handlers';
 import { tools } from '../registry';
 
 /**
@@ -399,8 +399,13 @@ describe('compact flag', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('has the expected number of tools (41)', () => {
-    expect(tools).toHaveLength(41);
+  it('publishes the consolidated set of 12 tools', () => {
+    expect(tools).toHaveLength(12);
+    expect(tools.map(t => t.name).sort()).toEqual([
+      'add_element', 'batch_operations', 'build_process', 'connect', 'create_dmn',
+      'deploy_process', 'layout', 'manage_diagram', 'manage_element', 'manage_form',
+      'query_diagram', 'update_element',
+    ]);
   });
 
   it('every tool has name, description, inputSchema, and executeLocal', () => {
@@ -419,14 +424,85 @@ describe('tools registry', () => {
     }
   });
 
-  it('local tools include create_model, create_form, add_form_field, create_dmn, deploy_process, list_open_diagrams, switch_diagram', () => {
-    const localTools = tools.filter(t => t.executeLocal).map(t => t.name);
-    expect(localTools).toEqual(
-      expect.arrayContaining([
-        'create_model', 'create_form', 'add_form_field', 'create_dmn', 'deploy_process',
-        'list_open_diagrams', 'switch_diagram',
-      ])
-    );
-    expect(localTools).toHaveLength(7);
+  it('local tools are create_dmn and deploy_process', () => {
+    const localTools = tools.filter(t => t.executeLocal).map(t => t.name).sort();
+    expect(localTools).toEqual(['create_dmn', 'deploy_process']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Consolidated tool facade tests
+// ---------------------------------------------------------------------------
+describe('resolveFacade', () => {
+  it('maps each consolidated operation to its internal tool name', () => {
+    const cases: Array<[string, string, string]> = [
+      ['manage_diagram', 'create', 'create_model'],
+      ['manage_diagram', 'get_xml', 'get_diagram_xml'],
+      ['add_element', 'task', 'add_task'],
+      ['add_element', 'pool', 'add_participant'],
+      ['connect', 'sequence_flow', 'connect_elements'],
+      ['connect', 'set_waypoints', 'set_flow_waypoints'],
+      ['update_element', 'properties', 'patch_element'],
+      ['update_element', 'headers', 'set_task_headers'],
+      ['query_diagram', 'bounds', 'get_element_bounds'],
+      ['manage_element', 'clone', 'clone_element'],
+      ['layout', 'auto', 'auto_layout'],
+      ['manage_form', 'link_to_task', 'link_form_to_task'],
+    ];
+    for (const [tool, op, internal] of cases) {
+      const r = resolveFacade(tool, { operation: op, foo: 1 });
+      expect(r).toEqual({ internalTool: internal, params: { foo: 1 } });
+    }
+  });
+
+  it('upgrades add_element "end" to add_end_event_typed when a typed event definition is given', () => {
+    expect(resolveFacade('add_element', { operation: 'end' }))
+      .toMatchObject({ internalTool: 'add_end_event' });
+    expect(resolveFacade('add_element', { operation: 'end', eventDefinitionType: 'none' }))
+      .toMatchObject({ internalTool: 'add_end_event' });
+    expect(resolveFacade('add_element', { operation: 'end', eventDefinitionType: 'bpmn:ErrorEventDefinition' }))
+      .toMatchObject({ internalTool: 'add_end_event_typed' });
+  });
+
+  it('passes through standalone tools unchanged', () => {
+    expect(resolveFacade('build_process', { diagramId: 't' }))
+      .toEqual({ internalTool: 'build_process', params: { diagramId: 't' } });
+    expect(resolveFacade('create_dmn', { name: 'd' }))
+      .toEqual({ internalTool: 'create_dmn', params: { name: 'd' } });
+  });
+
+  it('returns an error for a missing or unknown operation', () => {
+    expect(resolveFacade('add_element', {})).toHaveProperty('error');
+    expect(resolveFacade('layout', { operation: 'bogus' })).toHaveProperty('error');
+  });
+});
+
+describe('consolidated dispatch routing', () => {
+  it('manage_diagram create routes to create_model (local)', async () => {
+    const result = await dispatch('manage_diagram', { operation: 'create', name: 'facade-test' });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.diagramId).toBeDefined();
+    tempFiles.push(payload.filePath);
+  });
+
+  it('add_element task routes to the IPC path', async () => {
+    const result = await dispatch('add_element', { operation: 'task', diagramId: 'test', type: 'bpmn:ServiceTask' });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe('IPC bridge not initialized');
+  });
+
+  it('rejects an unknown operation with Invalid parameters', async () => {
+    const result = await dispatch('connect', { operation: 'nope', diagramId: 'test' });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe('Invalid parameters');
+  });
+
+  it('manage_form create routes to create_form (local)', async () => {
+    const result = await dispatch('manage_form', { operation: 'create', name: 'facade-form' });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.formId).toBeDefined();
+    tempFiles.push(payload.filePath);
   });
 });

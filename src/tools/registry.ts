@@ -448,6 +448,160 @@ export const switchDiagramSchema = z.object({
   name: z.string().optional().describe('Diagram name (partial match, case-insensitive)'),
 });
 
+// ===========================================================================
+// Consolidated (public) tool schemas
+// ---------------------------------------------------------------------------
+// The plugin publishes a small set of resource-oriented tools, each selecting
+// behaviour via an `operation` enum. These flat schemas describe the full
+// published surface; strict per-operation validation is performed in the
+// handler against the individual schemas defined above. Fields are optional
+// here because their applicability depends on `operation` — the handler
+// enforces the real requirements.
+// ===========================================================================
+
+export const manageDiagramSchema = z.object({
+  operation: z.enum(['create', 'list', 'switch', 'save', 'export_image', 'import_xml', 'get_xml'])
+    .describe('Diagram-level action to perform'),
+  diagramId: z.string().optional().describe('Target diagram ID (returned by create). Required for save/export_image/import_xml/get_xml; optional for switch.'),
+  name: z.string().optional().describe('create: diagram name. switch: diagram name (partial, case-insensitive).'),
+  filePath: z.string().optional().describe('save/export_image: absolute output path. switch: .bpmn file path to match.'),
+  format: z.enum(['svg', 'png']).optional().describe('export_image: image format (default png)'),
+  scale: z.number().optional().describe('export_image: PNG scale factor (default 2)'),
+  xml: z.string().optional().describe('import_xml: complete BPMN 2.0 XML to import'),
+});
+
+export const addElementSchema = z.object({
+  operation: z.enum(['start', 'end', 'task', 'gateway', 'event', 'subprocess', 'pool', 'lane', 'annotation', 'group'])
+    .describe('Kind of element to add'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  type: z.string().optional().describe('Specific BPMN type for task/gateway/event/subprocess (e.g. "bpmn:ServiceTask", "bpmn:ParallelGateway", "bpmn:SubProcess"). Defaults applied per kind.'),
+  name: z.string().optional().describe('Element label'),
+  x: z.number().optional().describe('Canvas x coordinate'),
+  y: z.number().optional().describe('Canvas y coordinate'),
+  parentId: z.string().optional().describe('Parent expanded subprocess ID (nest the element inside it)'),
+  // end / event
+  eventDefinitionType: z.string().optional().describe('Event/end definition (Timer, Message, Signal, Error, Escalation, Conditional, Compensate, Terminate). end: presence (≠ none) creates a typed end event.'),
+  attachedToId: z.string().optional().describe('event: host element ID (required for boundary events)'),
+  cancelActivity: z.boolean().optional().describe('event boundary: interrupting (true) vs non-interrupting (false)'),
+  boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('event boundary: placement on host edge'),
+  timerValue: z.string().optional().describe('event: ISO 8601 timer expression (e.g. PT1H)'),
+  timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('event: timer type'),
+  // subprocess / pool / group
+  width: z.number().optional().describe('subprocess/pool/group: width'),
+  height: z.number().optional().describe('subprocess/pool/group: height'),
+  collapsed: z.boolean().optional().describe('subprocess: collapsed'),
+  calledElement: z.string().optional().describe('subprocess: process ID to call (CallActivity)'),
+  categoryValue: z.string().optional().describe('group: BPMN category value'),
+  // lane
+  participantId: z.string().optional().describe('lane: ID of the pool to add the lane to'),
+  // annotation
+  text: z.string().optional().describe('annotation: text content'),
+  attachToId: z.string().optional().describe('annotation: element ID to associate with'),
+});
+
+export const connectSchema = z.object({
+  operation: z.enum(['sequence_flow', 'message_flow', 'set_waypoints'])
+    .describe('Connection action: create a sequence flow, create a cross-pool message flow, or replace waypoints on an existing flow'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  sourceId: z.string().optional().describe('sequence_flow/message_flow: source element ID'),
+  targetId: z.string().optional().describe('sequence_flow/message_flow: target element ID'),
+  name: z.string().optional().describe('message_flow: label'),
+  flowId: z.string().optional().describe('set_waypoints: ID of the existing flow to re-route'),
+  waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional()
+    .describe('sequence_flow: optional routing path. set_waypoints: new path including source/target points (min 2).'),
+});
+
+export const updateElementSchema = z.object({
+  operation: z.enum(['properties', 'move', 'resize', 'io_mapping', 'headers'])
+    .describe('What to update. properties = name/documentation/condition/implementation in one call.'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  elementId: z.string().describe('ID of the element to update'),
+  // properties
+  name: z.string().optional().describe('properties: element name'),
+  documentation: z.string().optional().describe('properties: documentation text'),
+  conditionExpression: z.string().optional().describe('properties: FEEL/JUEL condition for sequence flows'),
+  implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional().describe('properties: Camunda 7 implementation type'),
+  implementationValue: z.string().optional().describe('properties: class/expression/connector value'),
+  taskTopic: z.string().optional().describe('properties: external task topic (Camunda 7)'),
+  taskPriority: z.string().optional().describe('properties: task priority'),
+  taskType: z.string().optional().describe('properties: Zeebe job type (Camunda 8)'),
+  taskRetries: z.string().optional().describe('properties: Zeebe retry count'),
+  isExecutable: z.boolean().optional().describe('properties: process isExecutable flag'),
+  // move
+  x: z.number().optional().describe('move: new center x'),
+  y: z.number().optional().describe('move: new center y'),
+  // resize
+  width: z.number().optional().describe('resize: new width'),
+  height: z.number().optional().describe('resize: new height'),
+  // io_mapping
+  inputs: z.array(z.object({ source: z.string(), target: z.string() })).optional().describe('io_mapping: input variable mappings'),
+  outputs: z.array(z.object({ source: z.string(), target: z.string() })).optional().describe('io_mapping: output variable mappings'),
+  // headers
+  headers: z.array(z.object({ key: z.string(), value: z.string() })).optional().describe('headers: key-value task headers'),
+});
+
+export const queryDiagramSchema = z.object({
+  operation: z.enum(['list', 'get', 'bounds'])
+    .describe('list = all elements; get = one element detail; bounds = exact rendered geometry of one element'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  elementId: z.string().optional().describe('get/bounds: element ID'),
+  typeFilter: z.string().optional().describe('list: filter by BPMN type prefix, e.g. "bpmn:Task"'),
+  parentId: z.string().optional().describe('list: filter to elements inside this expanded subprocess'),
+  fields: z.array(z.string()).optional().describe('list: fields to include per element (id always included)'),
+});
+
+export const manageElementSchema = z.object({
+  operation: z.enum(['delete', 'clone']).describe('delete an element, or clone one with its configuration'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  elementId: z.string().optional().describe('delete: ID of the element to remove'),
+  sourceId: z.string().optional().describe('clone: ID of the element to clone'),
+  name: z.string().optional().describe('clone: override name on the clone'),
+  x: z.number().optional().describe('clone: x position for the clone'),
+  y: z.number().optional().describe('clone: y position for the clone'),
+  deep: z.boolean().optional().describe('clone: also clone subprocess children and internal flows'),
+});
+
+export const layoutSchema = z.object({
+  operation: z.enum(['auto', 'validate']).describe('auto = apply smart branch-aware auto-layout; validate = detect layout issues'),
+  diagramId: z.string().describe('ID returned by manage_diagram create'),
+  elementId: z.string().optional().describe('Scope to a specific expanded subprocess (default: whole diagram)'),
+  options: z.object({
+    branchSpacing: z.number().optional(),
+    horizontalSpacing: z.number().optional(),
+    flowRouting: z.enum(['orthogonal', 'direct']).optional(),
+    mergeAlignment: z.enum(['center', 'top-branch']).optional(),
+    boundaryEventPosition: z.enum(['bottom', 'bottom-right']).optional(),
+  }).optional().describe('auto: layout tuning options'),
+  autoFix: z.boolean().optional().describe('validate: apply generated fixes automatically'),
+  severity: z.enum(['error', 'warning', 'suggestion']).optional().describe('validate: minimum severity to return'),
+});
+
+export const manageFormSchema = z.object({
+  operation: z.enum(['create', 'add_field', 'link_to_task'])
+    .describe('create a .form file, add a field to one, or link a form to a UserTask'),
+  // create
+  name: z.string().optional().describe('create: form name (filename and form ID)'),
+  fields: z.array(z.object({
+    key: z.string(),
+    label: z.string(),
+    type: z.enum(['textfield', 'textarea', 'number', 'checkbox', 'select', 'radio', 'taglist', 'datetime']).optional(),
+    required: z.boolean().optional(),
+    description: z.string().optional(),
+    options: z.array(z.object({ label: z.string(), value: z.string() })).optional(),
+  })).optional().describe('create: initial fields'),
+  // add_field
+  formPath: z.string().optional().describe('add_field/link_to_task: path to the .form file'),
+  key: z.string().optional().describe('add_field: field variable key'),
+  label: z.string().optional().describe('add_field: display label'),
+  type: z.enum(['textfield', 'textarea', 'number', 'checkbox', 'select', 'radio', 'taglist', 'datetime']).optional().describe('add_field: field type'),
+  required: z.boolean().optional().describe('add_field: whether the field is required'),
+  description: z.string().optional().describe('add_field: help text'),
+  options: z.array(z.object({ label: z.string(), value: z.string() })).optional().describe('add_field: options for select/radio/taglist'),
+  // link_to_task
+  diagramId: z.string().optional().describe('link_to_task: diagram ID'),
+  taskId: z.string().optional().describe('link_to_task: UserTask element ID'),
+});
+
 /**
  * Describes a single MCP tool exposed by the plugin.
  */
@@ -460,102 +614,94 @@ export interface ToolDefinition {
 }
 
 /**
- * Registry of all MCP tools available in this plugin.
+ * Registry of all MCP tools published by this plugin.
+ *
+ * The public surface is a small set of resource-oriented tools, each selecting
+ * behaviour via an `operation` enum (see the consolidated schemas above). The
+ * handler translates `(tool, operation)` to the original internal tool name and
+ * runs the existing dispatch + renderer implementations unchanged.
  */
 export const tools: ToolDefinition[] = [
   {
-    name: 'create_model',
+    name: 'manage_diagram',
     description:
-      'Creates a new empty BPMN diagram tab in the Camunda Desktop Modeler.',
-    inputSchema: createModelSchema,
+      'Diagram lifecycle and I/O. operation: create (new empty BPMN tab), list (open tabs), switch (active tab by id/path/name), save (write .bpmn to filePath), export_image (PNG/SVG), import_xml (replace from XML), get_xml (export XML).',
+    inputSchema: manageDiagramSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'build_process',
+    description:
+      'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position. Preferred over many add_element calls.',
+    inputSchema: buildProcessSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'add_element',
+    description:
+      'Adds a single BPMN element. operation selects the kind: start, end, task, gateway, event, subprocess, pool, lane, annotation, group. Use the `type` field for the specific BPMN type and `parentId` to nest inside an expanded subprocess.',
+    inputSchema: addElementSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'connect',
+    description:
+      'Creates or re-routes connections. operation: sequence_flow (connect two elements), message_flow (cross-pool), set_waypoints (replace routing of an existing flow without touching source/target/labels).',
+    inputSchema: connectSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'update_element',
+    description:
+      'Updates an existing element. operation: properties (name/documentation/condition/implementation in one call), move (reposition), resize (width/height), io_mapping (input/output variables), headers (task headers).',
+    inputSchema: updateElementSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'query_diagram',
+    description:
+      'Reads diagram state. operation: list (all elements, optional typeFilter/fields), get (full detail incl. properties, extensions, connections), bounds (exact rendered geometry, edge connection points, waypoints).',
+    inputSchema: queryDiagramSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'manage_element',
+    description:
+      'operation: delete (remove an element), clone (duplicate with config; deep=true also clones subprocess children and internal flows).',
+    inputSchema: manageElementSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'layout',
+    description:
+      'operation: auto (smart branch-aware auto-layout — fans gateway branches, aligns merges, routes orthogonally, positions boundary events), validate (detect overlaps/diagonal flows/misalignment and optionally autoFix).',
+    inputSchema: layoutSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'batch_operations',
+    description:
+      'Executes multiple primitive operations in one undoable call. Each entry is { tool, params } where `tool` is an internal primitive (e.g. "move_element", "connect_elements", "set_properties", "add_task"). Use "$ref:N" in params to reference the elementId/connectionId from operation N. Note: batch uses internal primitive names, not the consolidated public tool names.',
+    inputSchema: batchOperationsSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'manage_form',
+    description:
+      'Camunda Form management. operation: create (new .form file with optional fields), add_field (append a field to a .form file), link_to_task (embed/reference a form on a UserTask, auto-detecting Camunda 7 vs 8).',
+    inputSchema: manageFormSchema,
+    executeLocal: false,
+  },
+  {
+    name: 'create_dmn',
+    description: 'Creates a new DMN decision table file.',
+    inputSchema: createDmnSchema,
     executeLocal: true,
   },
   {
-    name: 'add_start_event',
-    description:
-      'Places a BPMN Start Event on the canvas. Use parentId to nest inside an expanded subprocess.',
-    inputSchema: addStartEventSchema,
-    executeLocal: false,
-  },
-  {
-    name: 'add_task',
-    description:
-      'Places a BPMN Task (UserTask, ServiceTask, etc.) on the canvas. Use parentId to nest inside an expanded subprocess.',
-    inputSchema: addTaskSchema,
-    executeLocal: false,
-  },
-  {
-    name: 'add_end_event',
-    description:
-      'Places a BPMN End Event on the canvas. Use parentId to nest inside an expanded subprocess.',
-    inputSchema: addEndEventSchema,
-    executeLocal: false,
-  },
-  {
-    name: 'connect_elements',
-    description:
-      'Connects two BPMN elements with a sequence flow. Use waypoints for custom routing (L-shaped, orthogonal).',
-    inputSchema: connectElementsSchema,
-    executeLocal: false,
-  },
-  {
-    name: 'create_form',
-    description:
-      'Creates a new Camunda Form (.form) JSON file. Optionally include initial fields.',
-    inputSchema: createFormSchema,
+    name: 'deploy_process',
+    description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.',
+    inputSchema: deployProcessSchema,
     executeLocal: true,
   },
-  {
-    name: 'add_form_field',
-    description:
-      'Adds a field to an existing Camunda Form (.form) file.',
-    inputSchema: addFormFieldSchema,
-    executeLocal: true,
-  },
-  {
-    name: 'link_form_to_task',
-    description:
-      'Links a Camunda Form to a UserTask by embedding the form JSON in the BPMN model and setting zeebe:formDefinition on the task.',
-    inputSchema: linkFormToTaskSchema,
-    executeLocal: false,
-  },
-  // v0.2 tools
-  { name: 'add_gateway', description: 'Places a BPMN Gateway (Exclusive, Parallel, Inclusive, EventBased) on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addGatewaySchema, executeLocal: false },
-  { name: 'add_event', description: 'Places an Intermediate or Boundary Event on the canvas, with optional event definition (Timer, Message, Signal, Error, etc). Use parentId to nest inside an expanded subprocess.', inputSchema: addEventSchema, executeLocal: false },
-  { name: 'add_subprocess', description: 'Places a Sub-Process or Call Activity on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addSubprocessSchema, executeLocal: false },
-  { name: 'set_properties', description: 'Sets properties on a BPMN element: name, documentation, conditions, implementation type (Camunda 7 class/delegate/external or Camunda 8 Zeebe job type).', inputSchema: setPropertiesSchema, executeLocal: false },
-  { name: 'set_io_mapping', description: 'Sets input/output variable mappings on an element. Supports both Camunda 7 and Camunda 8 formats.', inputSchema: setIoMappingSchema, executeLocal: false },
-  { name: 'set_task_headers', description: 'Sets key-value task headers on an element. Camunda 8: zeebe:TaskHeaders. Camunda 7: camunda:Properties.', inputSchema: setTaskHeadersSchema, executeLocal: false },
-  { name: 'list_elements', description: 'Lists all BPMN elements in the current diagram with optional type filter.', inputSchema: listElementsSchema, executeLocal: false },
-  { name: 'get_element', description: 'Returns detailed information about a specific BPMN element including properties, extensions, and connections.', inputSchema: getElementSchema, executeLocal: false },
-  { name: 'delete_element', description: 'Removes an element from the diagram.', inputSchema: deleteElementSchema, executeLocal: false },
-  { name: 'get_diagram_xml', description: 'Exports the current diagram as BPMN 2.0 XML.', inputSchema: getDiagramXmlSchema, executeLocal: false },
-  { name: 'import_xml', description: 'Imports/replaces the current diagram from BPMN 2.0 XML.', inputSchema: importXmlSchema, executeLocal: false },
-  // v0.3 tools
-  { name: 'move_element', description: 'Moves an element to new coordinates on the canvas.', inputSchema: moveElementSchema, executeLocal: false },
-  { name: 'save_diagram', description: 'Saves the current diagram as BPMN XML to a file path.', inputSchema: saveDiagramSchema, executeLocal: false },
-  { name: 'add_participant', description: 'Adds a pool (bpmn:Participant) for collaboration diagrams.', inputSchema: addParticipantSchema, executeLocal: false },
-  { name: 'add_lane', description: 'Adds a lane inside a participant (pool).', inputSchema: addLaneSchema, executeLocal: false },
-  { name: 'add_end_event_typed', description: 'Places a typed End Event (Error, Escalation, Signal, Message, Terminate) on the canvas. Use parentId to nest inside an expanded subprocess.', inputSchema: addEndEventTypedSchema, executeLocal: false },
-  { name: 'add_message_flow', description: 'Creates a message flow between elements in different pools.', inputSchema: addMessageFlowSchema, executeLocal: false },
-  { name: 'add_annotation', description: 'Adds a text annotation to the diagram, optionally associated with an element.', inputSchema: addAnnotationSchema, executeLocal: false },
-  // v0.5 tools
-  { name: 'create_dmn', description: 'Creates a new DMN decision table file.', inputSchema: createDmnSchema, executeLocal: true },
-  { name: 'deploy_process', description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.', inputSchema: deployProcessSchema, executeLocal: true },
-  // v0.8 tools
-  { name: 'resize_element', description: 'Resizes a shape element (expanded subprocess, pool, lane, etc.) to the given width and height. The element center stays fixed.', inputSchema: resizeElementSchema, executeLocal: false },
-  // v0.9 tools
-  { name: 'set_flow_waypoints', description: 'Replaces the visual waypoints on an existing sequence/message flow without modifying source, target, name, conditions, or extensions. Returns the updated waypoints.', inputSchema: setFlowWaypointsSchema, executeLocal: false },
-  { name: 'auto_layout', description: 'Smart branch-aware auto-layout: fans out gateway branches vertically, aligns merge gateways, routes flows orthogonally, positions boundary events. Use options to control spacing.', inputSchema: autoLayoutSchema, executeLocal: false },
-  { name: 'get_element_bounds', description: 'Returns the exact rendered bounds, center, edge connection points, and waypoints (for flows) of an element. Useful for calculating coordinates.', inputSchema: getElementBoundsSchema, executeLocal: false },
-  { name: 'clone_element', description: 'Clones an element with all its properties, extensions, and configuration. Use deep=true for expanded subprocesses to also clone children and internal flows.', inputSchema: cloneElementSchema, executeLocal: false },
-  { name: 'batch_operations', description: 'Executes multiple tool operations in sequence. Use "$ref:N" in params to reference the elementId/connectionId from operation N. Returns results array.', inputSchema: batchOperationsSchema, executeLocal: false },
-  { name: 'add_group', description: 'Adds a BPMN Group artifact (dashed-border rectangle) for visual grouping without affecting execution semantics.', inputSchema: addGroupSchema, executeLocal: false },
-  { name: 'patch_element', description: 'Updates any combination of properties on a BPMN element in one call: name, documentation, conditions, implementation, waypoints, position. Superset of set_properties + set_flow_waypoints + move_element.', inputSchema: patchElementSchema, executeLocal: false },
-  { name: 'build_process', description: 'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position.', inputSchema: buildProcessSchema, executeLocal: false },
-  { name: 'export_image', description: 'Exports the current diagram as an image file (PNG or SVG). PNG uses an offscreen canvas for rasterization at configurable scale. Returns { saved, filePath, format, width, height }.', inputSchema: exportImageSchema, executeLocal: false },
-  { name: 'validate_layout', description: 'Detects layout issues (overlaps, diagonal flows, misalignment, cramped elements, subprocess bounds) and generates actionable fixes. Set autoFix=true to apply all fixes automatically.', inputSchema: validateLayoutSchema, executeLocal: false },
-  // tab management
-  { name: 'list_open_diagrams', description: 'Lists all open diagram tabs with their IDs, names, types, and file paths. Tabs are discovered as they become active — a tab must have been focused at least once to appear.', inputSchema: listOpenDiagramsSchema, executeLocal: true },
-  { name: 'switch_diagram', description: 'Switches to a specific diagram tab by ID, file path, or name (partial match). At least one parameter must be provided. Makes the target tab active for all subsequent operations.', inputSchema: switchDiagramSchema, executeLocal: true },
 ];

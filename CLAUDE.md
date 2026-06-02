@@ -59,7 +59,10 @@ Add to `.mcp.json`:
 - `client/` code runs in Chromium — cannot use Node.js modules directly; must be webpack-bundled.
 - `ipcRenderer` access may require `contextBridge` or a `window.__ipc` bridge depending on Modeler's preload config.
 - `create_model` operates at the Modeler/Tab level (Node.js side); canvas-level tools like `add_start_event` require IPC to Chromium.
-- All new tools follow the same IPC dispatch pattern: register in `tools/registry.js`, route in `tools/handlers.js`, implement bpmn-js calls in `client/bpmn-tools.js`.
+- The public MCP surface is **12 consolidated, resource-oriented tools** (`manage_diagram`, `add_element`, `connect`, `update_element`, `query_diagram`, `manage_element`, `layout`, `manage_form`, plus standalone `build_process`, `batch_operations`, `create_dmn`, `deploy_process`). Most select behaviour via an `operation` enum.
+- **Facade architecture:** consolidated tools are a thin layer. `resolveFacade()` in `src/tools/handlers.ts` maps `(publicTool, operation)` → an internal tool name (e.g. `add_element {operation:"task"}` → `add_task`); the existing internal dispatch switch and the renderer implementations in `client/bpmn-tools.ts` are keyed on those internal names and stay untouched. Internal per-operation Zod schemas in `src/tools/registry.ts` remain the source of truth for validation.
+- **To add a capability:** add an `operation` value to the relevant consolidated schema + its `FACADE` map entry in `handlers.ts`, then implement the internal handler the usual way — internal Zod schema in `registry.ts`, route in the `handlers.ts` switch, bpmn-js calls in `client/bpmn-tools.js`. The renderer keeps using internal tool names.
+- `batch_operations` runs in the renderer and its `operations[].tool` field references **internal primitive names** (e.g. `move_element`), not the consolidated public names.
 
 ## Dependencies
 
