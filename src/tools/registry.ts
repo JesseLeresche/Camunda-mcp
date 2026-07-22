@@ -18,6 +18,13 @@ export const addStartEventSchema = z.object({
   x: z.number().default(200).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  eventDefinitionType: z.enum([
+    'bpmn:MessageEventDefinition', 'bpmn:SignalEventDefinition', 'bpmn:TimerEventDefinition', 'none',
+  ]).default('none').describe('Start event definition type. A process may only have one blank (none) start event — use a typed start event (e.g. Message) to model a second, distinct trigger.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  timerValue: z.string().optional().describe('For eventDefinitionType bpmn:TimerEventDefinition: ISO 8601 timer expression (e.g. PT1H, R/PT5M).'),
+  timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type when eventDefinitionType is bpmn:TimerEventDefinition.'),
 });
 
 /**
@@ -31,6 +38,7 @@ export const addTaskSchema = z.object({
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  messageRef: z.string().optional().describe('Message name for ReceiveTask (required by Camunda validation) or SendTask (optional). Find-or-creates a bpmn:Message root element with this name.'),
 });
 
 /**
@@ -55,6 +63,8 @@ export const connectElementsSchema = z.object({
     x: z.number().describe('X coordinate of the bendpoint'),
     y: z.number().describe('Y coordinate of the bendpoint'),
   })).optional().describe('Optional array of {x, y} coordinates defining the connection routing path. Include source and target connection points for full control, or just intermediate bendpoints for L-shaped/orthogonal routing.'),
+  conditionExpression: z.string().optional().describe('FEEL/JUEL condition for this sequence flow. Every non-default flow out of a gateway (or an activity with multiple outgoing flows) must have either this or isDefault set, or Camunda validation fails.'),
+  isDefault: z.boolean().optional().describe('Mark this flow as the default flow of its source element (gateway/activity). Satisfies the "condition or default" validation rule without a conditionExpression. Only one outgoing flow per source can be default.'),
 });
 
 /**
@@ -131,6 +141,12 @@ export const addEventSchema = z.object({
   attachedToId: z.string().optional().describe('Host element ID (required for BoundaryEvent)'),
   cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
   boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).default('bottom').describe('Where to place the boundary event on the host element edge'),
+  errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('Optional errorCode when find-or-creating the bpmn:Error referenced by errorRef.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('For eventDefinitionType bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('Optional escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef.'),
   timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process (ignored for BoundaryEvent)'),
@@ -255,6 +271,12 @@ export const addEndEventTypedSchema = z.object({
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('Optional errorCode when find-or-creating the bpmn:Error referenced by errorRef.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('For eventDefinitionType bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('Optional escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef.'),
 });
 
 export const addMessageFlowSchema = z.object({
@@ -385,18 +407,24 @@ export const buildProcessSchema = z.object({
     parentId: z.string().optional().describe('Logical ID of parent expanded subprocess'),
     properties: z.object({
       conditionExpression: z.string().optional(),
-      taskType: z.string().optional().describe('Zeebe job type'),
+      taskType: z.string().optional().describe('Zeebe job type — required by Camunda validation for serviceTask, sendTask, businessRuleTask, and scriptTask (not just serviceTask).'),
       taskRetries: z.string().optional(),
       documentation: z.string().optional(),
       implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional(),
       implementationValue: z.string().optional(),
       isExecutable: z.boolean().optional(),
+      errorRef: z.string().optional().describe('For endEventError or an eventDefinitionType of bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+      errorCode: z.string().optional().describe('Optional errorCode when find-or-creating the bpmn:Error referenced by errorRef.'),
+      messageRef: z.string().optional().describe('For endEventMessage, an eventDefinitionType of bpmn:MessageEventDefinition, or a receiveTask (required)/sendTask (optional): message name. Find-or-creates a bpmn:Message root element.'),
+      signalRef: z.string().optional().describe('For endEventSignal or an eventDefinitionType of bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+      escalationRef: z.string().optional().describe('For endEventEscalation or an eventDefinitionType of bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+      escalationCode: z.string().optional().describe('Optional escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef.'),
     }).optional().describe('Properties to set on the element after creation'),
     width: z.number().optional().describe('Width for subprocesses/groups'),
     height: z.number().optional().describe('Height for subprocesses/groups'),
     collapsed: z.boolean().optional().describe('Collapsed subprocess'),
     calledElement: z.string().optional().describe('Process ID for CallActivity'),
-    eventDefinitionType: z.string().optional().describe('Event definition type for intermediate/boundary events'),
+    eventDefinitionType: z.string().optional().describe('Event definition type for startEvent (Message/Signal/Timer only — a process may only have one blank start event), intermediate events, or boundary events.'),
     attachedToId: z.string().optional().describe('Logical ID of host element for BoundaryEvent'),
     cancelActivity: z.boolean().optional().describe('Interrupting boundary event (default true)'),
     boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('Where to place boundary event on host edge (default bottom)'),
@@ -406,6 +434,7 @@ export const buildProcessSchema = z.object({
     to: z.string().describe('Logical ID of target element'),
     name: z.string().optional().describe('Flow label'),
     conditionExpression: z.string().optional().describe('FEEL/JUEL condition'),
+    isDefault: z.boolean().optional().describe('Mark as the default flow of its source element. Satisfies validation without a conditionExpression; only one outgoing flow per source can be default.'),
     waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
   })).optional().describe('Sequence flows to create between elements'),
   autoLayout: z.boolean().default(false).describe('Apply Modeler auto-layout after building'),
@@ -479,13 +508,19 @@ export const addElementSchema = z.object({
   x: z.number().optional().describe('Canvas x coordinate'),
   y: z.number().optional().describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('Parent expanded subprocess ID (nest the element inside it)'),
-  // end / event
-  eventDefinitionType: z.string().optional().describe('Event/end definition (Timer, Message, Signal, Error, Escalation, Conditional, Compensate, Terminate). end: presence (≠ none) creates a typed end event.'),
+  // start / end / event
+  eventDefinitionType: z.string().optional().describe('Event/start/end definition (Timer, Message, Signal, Error, Escalation, Conditional, Compensate, Terminate). end/start: presence (≠ none) creates a typed start/end event — a process may only have one blank start event, so use a typed one (e.g. Message) for a second distinct trigger. start supports Message/Signal/Timer only.'),
   attachedToId: z.string().optional().describe('event: host element ID (required for boundary events)'),
   cancelActivity: z.boolean().optional().describe('event boundary: interrupting (true) vs non-interrupting (false)'),
   boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('event boundary: placement on host edge'),
   timerValue: z.string().optional().describe('event: ISO 8601 timer expression (e.g. PT1H)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('event: timer type'),
+  errorRef: z.string().optional().describe('end/event (ErrorEventDefinition): error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('Optional errorCode when find-or-creating the bpmn:Error referenced by errorRef.'),
+  messageRef: z.string().optional().describe('start/end/event (MessageEventDefinition), or task (ReceiveTask required, SendTask optional): message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('start/end/event (SignalEventDefinition): signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('end/event (EscalationEventDefinition): escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('Optional escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef.'),
   // subprocess / pool / group
   width: z.number().optional().describe('subprocess/pool/group: width'),
   height: z.number().optional().describe('subprocess/pool/group: height'),
@@ -509,6 +544,8 @@ export const connectSchema = z.object({
   flowId: z.string().optional().describe('set_waypoints: ID of the existing flow to re-route'),
   waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional()
     .describe('sequence_flow: optional routing path. set_waypoints: new path including source/target points (min 2).'),
+  conditionExpression: z.string().optional().describe('sequence_flow: FEEL/JUEL condition. Required (or isDefault) for every non-default flow out of a gateway/activity with multiple outgoing flows.'),
+  isDefault: z.boolean().optional().describe('sequence_flow: mark as the default flow of its source element. Only one outgoing flow per source can be default.'),
 });
 
 export const updateElementSchema = z.object({

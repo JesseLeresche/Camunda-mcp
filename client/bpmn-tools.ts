@@ -212,12 +212,13 @@ async function dispatchRendererTool(
 
 function addStartEvent(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle }: BpmnServices
 ) {
   const name = (params.name as string) || 'Start';
   const x = (params.x as number) || 200;
   const y = (params.y as number) || 200;
   const parentId = params.parentId as string | undefined;
+  const eventDefType = (params.eventDefinitionType as string) || 'none';
 
   const parent = resolveParent(parentId, { elementRegistry, canvas });
 
@@ -227,22 +228,42 @@ function addStartEvent(
     parent
   );
 
+  // A process may only have one *blank* (no event definition) start event —
+  // typing this one (e.g. as a Message Start Event) lets it coexist with
+  // other distinct triggers modeled the same way.
+  if (eventDefType !== 'none') {
+    const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps: any = eventDefRefProps(moddle, definitions, eventDefType, params);
+    if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
+      const timerType = (params.timerType as string) || 'timeDuration';
+      const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
+      eventDefProps[timerType] = formalExpression;
+    }
+    const eventDef = moddle.create(eventDefType, eventDefProps);
+    bo.eventDefinitions = bo.eventDefinitions || [];
+    bo.eventDefinitions.push(eventDef);
+    eventDef.$parent = bo;
+    modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+  }
+
   if (name) {
     modeling.updateLabel(shape, name);
   }
 
-  return { elementId: shape.id, name, x: shape.x, y: shape.y };
+  return { elementId: shape.id, eventDefinitionType: eventDefType, name, x: shape.x, y: shape.y };
 }
 
 function addTask(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:Task';
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
   const y = (params.y as number) || 200;
   const parentId = params.parentId as string | undefined;
+  const messageRef = params.messageRef as string | undefined;
 
   const parent = resolveParent(parentId, { elementRegistry, canvas });
 
@@ -254,6 +275,17 @@ function addTask(
 
   if (name) {
     modeling.updateLabel(shape, name);
+  }
+
+  // ReceiveTask requires a Message Reference for Camunda validation; SendTask
+  // may optionally carry one too (both have a messageRef attribute in BPMN).
+  if (messageRef && (type === 'bpmn:ReceiveTask' || type === 'bpmn:SendTask')) {
+    const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    if (definitions) {
+      const message = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', messageRef);
+      modeling.updateProperties(shape, { messageRef: message });
+    }
   }
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
@@ -285,11 +317,13 @@ function addEndEvent(
 
 function connectElements(
   params: Record<string, unknown>,
-  { modeling, elementRegistry }: BpmnServices
+  { modeling, elementRegistry, moddle }: BpmnServices
 ) {
   const sourceId = params.sourceId as string;
   const targetId = params.targetId as string;
   const waypoints = params.waypoints as Array<{ x: number; y: number }> | undefined;
+  const conditionExpression = params.conditionExpression as string | undefined;
+  const isDefault = params.isDefault as boolean | undefined;
 
   const source = elementRegistry.get(sourceId);
   if (!source) {
@@ -309,6 +343,15 @@ function connectElements(
     }, source.parent);
   } else {
     connection = modeling.connect(source, target);
+  }
+
+  if (conditionExpression) {
+    const expr = moddle.create('bpmn:FormalExpression', { body: conditionExpression });
+    modeling.updateProperties(connection, { conditionExpression: expr });
+  }
+
+  if (isDefault) {
+    modeling.updateProperties(source, { default: connection.businessObject });
   }
 
   return { connectionId: connection.id, sourceId, targetId };
@@ -487,6 +530,65 @@ function addGateway(
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
 }
 
+/**
+ * Finds an existing root-level bpmn:Error/Message/Signal/Escalation element by
+ * name (or id), or creates one under `definitions.rootElements` if none exists.
+ * Used to wire up event/task reference properties (errorRef, messageRef, ...)
+ * that Camunda validation requires alongside the event definition itself.
+ */
+function findOrCreateRootElement(
+  moddle: any,
+  definitions: any,
+  refType: 'bpmn:Error' | 'bpmn:Message' | 'bpmn:Signal' | 'bpmn:Escalation',
+  name: string,
+  code?: string,
+): any {
+  if (!definitions.rootElements) definitions.rootElements = [];
+  const existing = definitions.rootElements.find(
+    (el: any) => el.$type === refType && (el.name === name || el.id === name)
+  );
+  if (existing) return existing;
+
+  const props: Record<string, unknown> = { name };
+  if (code && refType === 'bpmn:Error') props.errorCode = code;
+  if (code && refType === 'bpmn:Escalation') props.escalationCode = code;
+
+  const element = moddle.create(refType, props);
+  element.$parent = definitions;
+  definitions.rootElements.push(element);
+  return element;
+}
+
+/**
+ * Resolves the errorRef/messageRef/signalRef/escalationRef property (if
+ * applicable to eventDefType and present in params) into event-definition
+ * constructor props, find-or-creating the referenced root element.
+ */
+function eventDefRefProps(
+  moddle: any,
+  definitions: any,
+  eventDefType: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!definitions) return {};
+  const props: Record<string, unknown> = {};
+  if (eventDefType === 'bpmn:ErrorEventDefinition' && params.errorRef) {
+    props.errorRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Error', params.errorRef as string, params.errorCode as string | undefined);
+  } else if (eventDefType === 'bpmn:MessageEventDefinition' && params.messageRef) {
+    props.messageRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', params.messageRef as string);
+  } else if (eventDefType === 'bpmn:SignalEventDefinition' && params.signalRef) {
+    props.signalRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Signal', params.signalRef as string);
+  } else if (eventDefType === 'bpmn:EscalationEventDefinition' && params.escalationRef) {
+    props.escalationRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Escalation', params.escalationRef as string, params.escalationCode as string | undefined);
+  }
+  return props;
+}
+
+/** Resolves the bpmn:definitions root from a freshly-created shape's business object. */
+function getDefinitions(bo: any, canvas: any): any {
+  return bo?.$parent?.$parent || canvas.getRootElement()?.businessObject?.$parent;
+}
+
 function addEvent(
   params: Record<string, unknown>,
   { modeling, canvas, moddle, elementRegistry }: BpmnServices
@@ -525,14 +627,15 @@ function addEvent(
   );
 
   if (eventDefType !== 'none') {
-    const eventDefProps: any = {};
+    const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps: any = eventDefRefProps(moddle, definitions, eventDefType, params);
     if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
       const timerType = (params.timerType as string) || 'timeDuration';
       const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
       eventDefProps[timerType] = formalExpression;
     }
     const eventDef = moddle.create(eventDefType, eventDefProps);
-    const bo = shape.businessObject;
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
@@ -571,6 +674,28 @@ function addSubprocess(
   if (name) modeling.updateLabel(shape, name);
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+}
+
+/**
+ * Attaches (or replaces) a zeebe:TaskDefinition extension element on a task,
+ * making it a valid Zeebe job worker. Required by Camunda validation for
+ * ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.
+ */
+function setZeebeTaskDefinition(
+  moddle: any,
+  modeling: any,
+  element: any,
+  taskType: string,
+  taskRetries?: string,
+): void {
+  const bo = element.businessObject;
+  let extElements = bo.extensionElements;
+  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
+  const taskDef = moddle.create('zeebe:TaskDefinition', { type: taskType, retries: taskRetries || '3' });
+  extElements.values.push(taskDef);
+  modeling.updateProperties(element, { extensionElements: extElements });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1079,8 +1204,10 @@ function addEndEventTyped(
   const shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
 
   if (eventDefType !== 'none') {
-    const eventDef = moddle.create(eventDefType, {});
     const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps = eventDefRefProps(moddle, definitions, eventDefType, params);
+    const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
@@ -1660,7 +1787,8 @@ async function buildProcess(
       shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
       const bo = shape.businessObject;
       const defType = END_EVENT_DEFS[typeName];
-      const eventDef = bpmnFactory.create(defType);
+      const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), defType, el.properties || {});
+      const eventDef = bpmnFactory.create(defType, refProps);
       eventDef.$parent = bo;
       bo.eventDefinitions = [eventDef];
 
@@ -1695,17 +1823,19 @@ async function buildProcess(
       }
       if (el.eventDefinitionType) {
         const bo = shape.businessObject;
-        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
       }
 
-    // Handle intermediate events
-    } else if (typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
+    // Handle start events (typed, e.g. Message Start Event) and intermediate events
+    } else if (typeName === 'startEvent' || typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
       shape = modeling.createShape({ type: TYPE_MAP[typeName] }, { x, y }, parent);
       if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
         const bo = shape.businessObject;
-        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
       }
@@ -1734,6 +1864,12 @@ async function buildProcess(
         props.conditionExpression = expr;
       }
       if (el.properties.isExecutable !== undefined) props.isExecutable = el.properties.isExecutable;
+      if (el.properties.messageRef && (shape.type === 'bpmn:ReceiveTask' || shape.type === 'bpmn:SendTask')) {
+        const definitions = getDefinitions(shape.businessObject, canvas);
+        if (definitions) {
+          props.messageRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', el.properties.messageRef);
+        }
+      }
       if (el.properties.taskType) {
         // Zeebe job type
         const hasZeebe = !!moddle.getPackage('zeebe');
@@ -1786,6 +1922,9 @@ async function buildProcess(
     if (flow.conditionExpression) {
       const expr = moddle.create('bpmn:FormalExpression', { body: flow.conditionExpression });
       modeling.updateProperties(connection, { conditionExpression: expr });
+    }
+    if (flow.isDefault) {
+      modeling.updateProperties(source, { default: connection.businessObject });
     }
 
     flowIds.push(connection.id);
