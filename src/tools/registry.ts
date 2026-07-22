@@ -231,6 +231,20 @@ export const importXmlSchema = z.object({
   xml: z.string().describe('Complete BPMN 2.0 XML to import'),
 });
 
+/**
+ * Zod schema for the set_execution_platform_version tool.
+ * Corrects the target Camunda 8 execution platform version on whichever
+ * diagram is currently open — needed because not every diagram is created
+ * via create_model (e.g. one authored directly in Modeler and only
+ * populated via MCP tools afterward carries no version stamp from this
+ * plugin at all).
+ */
+export const setExecutionPlatformVersionSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  version: z.string().describe('Target execution platform version, e.g. "8.10" or "8.10.0", matching your connected Zeebe cluster.'),
+  platform: z.string().default('Camunda Cloud').describe('Execution platform name (default "Camunda Cloud").'),
+});
+
 // ---------------------------------------------------------------------------
 // v0.3 schemas
 // ---------------------------------------------------------------------------
@@ -491,14 +505,16 @@ export const switchDiagramSchema = z.object({
 // ===========================================================================
 
 export const manageDiagramSchema = z.object({
-  operation: z.enum(['create', 'list', 'switch', 'save', 'export_image', 'import_xml', 'get_xml'])
+  operation: z.enum(['create', 'list', 'switch', 'save', 'export_image', 'import_xml', 'get_xml', 'set_execution_platform_version'])
     .describe('Diagram-level action to perform'),
-  diagramId: z.string().optional().describe('Target diagram ID (returned by create). Required for save/export_image/import_xml/get_xml; optional for switch.'),
+  diagramId: z.string().optional().describe('Target diagram ID (returned by create). Required for save/export_image/import_xml/get_xml/set_execution_platform_version; optional for switch.'),
   name: z.string().optional().describe('create: diagram name. switch: diagram name (partial, case-insensitive).'),
   filePath: z.string().optional().describe('save/export_image: absolute output path. switch: .bpmn file path to match.'),
   format: z.enum(['svg', 'png']).optional().describe('export_image: image format (default png)'),
   scale: z.number().optional().describe('export_image: PNG scale factor (default 2)'),
   xml: z.string().optional().describe('import_xml: complete BPMN 2.0 XML to import'),
+  version: z.string().optional().describe('set_execution_platform_version: target version, e.g. "8.10", matching your connected Zeebe cluster.'),
+  platform: z.string().optional().describe('set_execution_platform_version: execution platform name (default "Camunda Cloud").'),
 });
 
 export const addElementSchema = z.object({
@@ -667,7 +683,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'manage_diagram',
     description:
-      'Diagram lifecycle and I/O. operation: create (new empty BPMN tab), list (open tabs), switch (active tab by id/path/name), save (write .bpmn to filePath), export_image (PNG/SVG), import_xml (replace from XML), get_xml (export XML).',
+      'Diagram lifecycle and I/O. operation: create (new empty BPMN tab), list (open tabs), switch (active tab by id/path/name), save (write .bpmn to filePath), export_image (PNG/SVG), import_xml (replace from XML), get_xml (export XML), set_execution_platform_version (correct the target Camunda 8 version on the open diagram, e.g. to match your Zeebe cluster).',
     inputSchema: manageDiagramSchema,
     executeLocal: false,
   },

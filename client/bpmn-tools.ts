@@ -203,6 +203,8 @@ async function dispatchRendererTool(
       return smartAutoLayout(params, services);
     case 'export_image':
       return exportImage(params, services);
+    case 'set_execution_platform_version':
+      return setExecutionPlatformVersion(params, services);
     case '__debug_moddle':
       return debugModdle(services);
     default:
@@ -1650,6 +1652,33 @@ function addGroup(
     width: shape.width,
     height: shape.height,
   };
+}
+
+/**
+ * Sets or corrects the target Camunda 8 execution platform version on the
+ * currently open diagram's bpmn:definitions. Needed because not every
+ * diagram is created via create_model — one authored directly in Modeler and
+ * only populated via MCP tools afterward carries no version stamp from this
+ * plugin at all, and would otherwise silently keep whichever version
+ * Modeler's own "New Diagram" default assigned it.
+ */
+function setExecutionPlatformVersion(
+  params: Record<string, unknown>,
+  { canvas }: BpmnServices
+) {
+  const version = params.version as string;
+  const platform = (params.platform as string) || 'Camunda Cloud';
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const definitions = rootElement.businessObject?.$parent;
+  if (!definitions) throw new Error('Could not resolve bpmn:definitions for the open diagram');
+
+  definitions.executionPlatform = platform;
+  definitions.executionPlatformVersion = version;
+
+  return { executionPlatform: platform, executionPlatformVersion: version };
 }
 
 /* ------------------------------------------------------------------ */
