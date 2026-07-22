@@ -214,7 +214,7 @@ async function dispatchRendererTool(
 
 function addStartEvent(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry, moddle }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle, bpmnFactory }: BpmnServices
 ) {
   const name = (params.name as string) || 'Start';
   const x = (params.x as number) || 200;
@@ -236,7 +236,7 @@ function addStartEvent(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps: any = eventDefRefProps(moddle, definitions, eventDefType, params);
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
     if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
       const timerType = (params.timerType as string) || 'timeDuration';
       const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
@@ -258,7 +258,7 @@ function addStartEvent(
 
 function addTask(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry, moddle }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle, bpmnFactory }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:Task';
   const name = (params.name as string) || '';
@@ -293,7 +293,7 @@ function addTask(
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
     if (definitions) {
-      const message = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', messageRef);
+      const message = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', messageRef);
       modeling.updateProperties(shape, { messageRef: message });
     }
   }
@@ -547,7 +547,7 @@ function addGateway(
  * that Camunda validation requires alongside the event definition itself.
  */
 function findOrCreateRootElement(
-  moddle: any,
+  bpmnFactory: any,
   definitions: any,
   refType: 'bpmn:Error' | 'bpmn:Message' | 'bpmn:Signal' | 'bpmn:Escalation',
   name: string,
@@ -563,7 +563,11 @@ function findOrCreateRootElement(
   if (code && refType === 'bpmn:Error') props.errorCode = code;
   if (code && refType === 'bpmn:Escalation') props.escalationCode = code;
 
-  const element = moddle.create(refType, props);
+  // Use bpmnFactory (not moddle.create) so the element gets an auto-assigned
+  // id via the Ids service — without an id, bpmn-moddle can't serialize a
+  // valid xxxRef attribute pointing back at this element (it writes the
+  // literal string "undefined" instead).
+  const element = bpmnFactory.create(refType, props);
   element.$parent = definitions;
   definitions.rootElements.push(element);
   return element;
@@ -575,7 +579,7 @@ function findOrCreateRootElement(
  * constructor props, find-or-creating the referenced root element.
  */
 function eventDefRefProps(
-  moddle: any,
+  bpmnFactory: any,
   definitions: any,
   eventDefType: string,
   params: Record<string, unknown>,
@@ -583,13 +587,13 @@ function eventDefRefProps(
   if (!definitions) return {};
   const props: Record<string, unknown> = {};
   if (eventDefType === 'bpmn:ErrorEventDefinition' && params.errorRef) {
-    props.errorRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Error', params.errorRef as string, params.errorCode as string | undefined);
+    props.errorRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Error', params.errorRef as string, params.errorCode as string | undefined);
   } else if (eventDefType === 'bpmn:MessageEventDefinition' && params.messageRef) {
-    props.messageRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', params.messageRef as string);
+    props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', params.messageRef as string);
   } else if (eventDefType === 'bpmn:SignalEventDefinition' && params.signalRef) {
-    props.signalRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Signal', params.signalRef as string);
+    props.signalRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Signal', params.signalRef as string);
   } else if (eventDefType === 'bpmn:EscalationEventDefinition' && params.escalationRef) {
-    props.escalationRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Escalation', params.escalationRef as string, params.escalationCode as string | undefined);
+    props.escalationRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Escalation', params.escalationRef as string, params.escalationCode as string | undefined);
   }
   return props;
 }
@@ -601,7 +605,7 @@ function getDefinitions(bo: any, canvas: any): any {
 
 function addEvent(
   params: Record<string, unknown>,
-  { modeling, canvas, moddle, elementRegistry }: BpmnServices
+  { modeling, canvas, moddle, elementRegistry, bpmnFactory }: BpmnServices
 ) {
   const type = params.type as string;
   const eventDefType = (params.eventDefinitionType as string) || 'none';
@@ -639,7 +643,7 @@ function addEvent(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps: any = eventDefRefProps(moddle, definitions, eventDefType, params);
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
     if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
       const timerType = (params.timerType as string) || 'timeDuration';
       const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
@@ -1192,7 +1196,7 @@ function addLane(
 
 function addEndEventTyped(
   params: Record<string, unknown>,
-  { modeling, canvas, moddle, elementRegistry }: BpmnServices
+  { modeling, canvas, moddle, elementRegistry, bpmnFactory }: BpmnServices
 ) {
   const eventDefType = (params.eventDefinitionType as string) || 'none';
   const name = (params.name as string) || '';
@@ -1207,7 +1211,7 @@ function addEndEventTyped(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps = eventDefRefProps(moddle, definitions, eventDefType, params);
+    const eventDefProps = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
     const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
@@ -1815,7 +1819,7 @@ async function buildProcess(
       shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
       const bo = shape.businessObject;
       const defType = END_EVENT_DEFS[typeName];
-      const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), defType, el.properties || {});
+      const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), defType, el.properties || {});
       const eventDef = bpmnFactory.create(defType, refProps);
       eventDef.$parent = bo;
       bo.eventDefinitions = [eventDef];
@@ -1851,7 +1855,7 @@ async function buildProcess(
       }
       if (el.eventDefinitionType) {
         const bo = shape.businessObject;
-        const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
         const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
@@ -1862,7 +1866,7 @@ async function buildProcess(
       shape = modeling.createShape({ type: TYPE_MAP[typeName] }, { x, y }, parent);
       if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
         const bo = shape.businessObject;
-        const refProps = eventDefRefProps(moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
         const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
@@ -1895,7 +1899,7 @@ async function buildProcess(
       if (el.properties.messageRef && (shape.type === 'bpmn:ReceiveTask' || shape.type === 'bpmn:SendTask')) {
         const definitions = getDefinitions(shape.businessObject, canvas);
         if (definitions) {
-          props.messageRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', el.properties.messageRef);
+          props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', el.properties.messageRef);
         }
       }
       if (el.properties.taskType && moddle.getPackage('zeebe')) {
