@@ -7,6 +7,8 @@
  * `webContents.executeJavaScript()`.
  */
 
+import { LayoutEngine } from '../src/tools/layout-engine';
+
 interface BpmnServices {
   modeling: any;
   elementRegistry: any;
@@ -1898,18 +1900,19 @@ async function smartAutoLayout(
   }
 
   let maxCol = 0;
-  while (queue.length > 0) {
+  let iterations = 0;
+  const maxIterations = shapes.length * shapes.length; // safety cap for cycles
+
+  while (queue.length > 0 && iterations < maxIterations) {
+    iterations++;
     const { el, col, row } = queue.shift()!;
 
-    // For convergence points (merge gateways), always take the latest column
-    // but allow row updates from the fan-out assignments
+    // Already assigned — only update column if this path arrives later (convergence).
+    // Never re-traverse outgoing to avoid infinite loops on cycles or convergence fans.
     const existingCol = colMap.get(el.id);
     if (existingCol !== undefined) {
-      // Keep the highest column (convergence: merge gateway needs to be after all branches)
-      if (col > existingCol) {
-        colMap.set(el.id, col);
-      }
-      continue; // Don't re-traverse outgoing — already processed
+      if (col > existingCol) colMap.set(el.id, col);
+      continue;
     }
 
     colMap.set(el.id, col);
@@ -1921,8 +1924,8 @@ async function smartAutoLayout(
     const isBranching = isGateway && targets.length > 1;
 
     if (isBranching) {
-      // Fan out branches vertically, centered on current row
-      // All targets get fanned — even if visited (they'll update col but not row)
+      // Fan out branches vertically, centered on current row.
+      // Only forward (unvisited) targets get row assignments.
       const forwardTargets = targets.filter(t => !visited.has(t.target.id));
 
       const branchCount = forwardTargets.length;
@@ -1931,25 +1934,25 @@ async function smartAutoLayout(
         forwardTargets.forEach((t, idx) => {
           const branchRow = startRow + idx * opts.branchSpacing;
           visited.add(t.target.id);
-          rowMap.set(t.target.id, branchRow); // Pre-assign row for fan-out
+          rowMap.set(t.target.id, branchRow);
           queue.push({ el: t.target, col: col + 1, row: branchRow });
         });
       }
 
-      // Loop-back targets: just update their column if needed
+      // Already-visited targets (convergence points): push a col-update entry.
+      // They will hit the early-exit above and only update their column — no re-traversal.
       for (const t of targets) {
-        if (visited.has(t.target.id) && !forwardTargets.includes(t)) {
+        if (visited.has(t.target.id)) {
           queue.push({ el: t.target, col: col + 1, row });
         }
       }
     } else {
-      // Sequential: advance column, keep same row
       for (const t of targets) {
         if (!visited.has(t.target.id)) {
           visited.add(t.target.id);
           queue.push({ el: t.target, col: col + 1, row });
         } else {
-          // Convergence: push to update column
+          // Convergence: push a col-update entry only (early-exit above prevents re-traversal).
           queue.push({ el: t.target, col: col + 1, row });
         }
       }
@@ -1978,6 +1981,42 @@ async function smartAutoLayout(
   const baseX = (scope.x || 0) + 60;
   const baseY = (scope.y || 0) + (scope.height ? scope.height / 2 : 200);
 
+  // Compute intended positions for all shapes
+  const intendedPositions = shapes.map((s: any) => {
+    const col = colMap.get(s.id);
+    const row = rowMap.get(s.id);
+    if (col === undefined || row === undefined) {
+      return null;
+    }
+    const elW = s.width || 36;
+    const elH = s.height || 36;
+    const targetX = baseX + col * (100 + opts.horizontalSpacing);
+    const targetY = baseY + row;
+    return {
+      id: s.id,
+      x: targetX - elW / 2,  // top-left x (LayoutEngine works with top-left, not center)
+      y: targetY - elH / 2,  // top-left y
+      width: elW,
+      height: elH,
+    };
+  }).filter((p: any): p is { id: string; x: number; y: number; width: number; height: number } => p !== null);
+
+  // Resolve overlaps using LayoutEngine
+  const layoutEngine = new LayoutEngine([]);
+  const nudges = layoutEngine.resolveOverlaps(intendedPositions);
+
+  // Build a map of nudged positions (id → adjusted top-left coords)
+  const nudgeMap = new Map<string, { x: number; y: number }>();
+  for (const move of nudges) {
+    const intended = intendedPositions.find(p => p.id === move.id);
+    if (intended) {
+      nudgeMap.set(move.id, {
+        x: intended.x + move.delta.x,
+        y: intended.y + move.delta.y,
+      });
+    }
+  }
+
   // Wrap all positioning + routing in a single undoable compound command
   let positioned = 0;
   let routed = 0;
@@ -1991,8 +2030,19 @@ async function smartAutoLayout(
 
     const elW = s.width || 36;
     const elH = s.height || 36;
-    const targetX = baseX + col * (100 + opts.horizontalSpacing);
-    const targetY = baseY + row;
+
+    // Check if this element was nudged for overlap avoidance
+    const nudged = nudgeMap.get(s.id);
+    let targetX: number, targetY: number;
+    if (nudged) {
+      // Use nudged top-left, convert back to center
+      targetX = nudged.x + elW / 2;
+      targetY = nudged.y + elH / 2;
+    } else {
+      // Use original column/row-based position
+      targetX = baseX + col * (100 + opts.horizontalSpacing);
+      targetY = baseY + row;
+    }
 
     const cx = s.x + elW / 2;
     const cy = s.y + elH / 2;

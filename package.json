@@ -7,7 +7,9 @@
     "build": "tsc && webpack --mode production",
     "dev": "tsc --watch & webpack --mode development --watch",
     "test": "vitest run",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "layout:test": "npx tsx src/layout-tests.ts",
+    "layout:test:dry": "npx tsx src/layout-tests.ts --dry-run"
   },
   "keywords": [
     "camunda",
