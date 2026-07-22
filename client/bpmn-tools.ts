@@ -264,6 +264,7 @@ function addTask(
   const y = (params.y as number) || 200;
   const parentId = params.parentId as string | undefined;
   const messageRef = params.messageRef as string | undefined;
+  const taskType = params.taskType as string | undefined;
 
   const parent = resolveParent(parentId, { elementRegistry, canvas });
 
@@ -275,6 +276,13 @@ function addTask(
 
   if (name) {
     modeling.updateLabel(shape, name);
+  }
+
+  // Job-worker task types (Service/Send/BusinessRule/Script) require a Zeebe
+  // task definition for Camunda validation — settable here at creation time
+  // instead of a required follow-up set_properties/patch_element call.
+  if (taskType && moddle.getPackage('zeebe')) {
+    setZeebeTaskDefinition(moddle, modeling, shape, taskType, params.taskRetries as string | undefined);
   }
 
   // ReceiveTask requires a Message Reference for Camunda validation; SendTask
@@ -706,7 +714,6 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
   const elementId = params.elementId as string;
   const element = elementRegistry.get(elementId);
   if (!element) throw new Error(`Element "${elementId}" not found`);
-  const bo = element.businessObject;
 
   const basicProps: any = {};
   if (params.name !== undefined) basicProps.name = params.name;
@@ -747,15 +754,7 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
   }
 
   if (params.taskType && hasZeebe) {
-    let extElements = bo.extensionElements;
-    if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
-    if (!extElements.values) extElements.values = [];
-    extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
-    const taskDef = moddle.create('zeebe:TaskDefinition', {
-      type: params.taskType as string, retries: (params.taskRetries as string) || '3',
-    });
-    extElements.values.push(taskDef);
-    modeling.updateProperties(element, { extensionElements: extElements });
+    setZeebeTaskDefinition(moddle, modeling, element, params.taskType as string, params.taskRetries as string | undefined);
   }
 
   return { elementId, updated: true };
@@ -1870,19 +1869,8 @@ async function buildProcess(
           props.messageRef = findOrCreateRootElement(moddle, definitions, 'bpmn:Message', el.properties.messageRef);
         }
       }
-      if (el.properties.taskType) {
-        // Zeebe job type
-        const hasZeebe = !!moddle.getPackage('zeebe');
-        if (hasZeebe) {
-          const bo = shape.businessObject;
-          if (!bo.extensionElements) {
-            bo.extensionElements = moddle.create('bpmn:ExtensionElements', { values: [] });
-            bo.extensionElements.$parent = bo;
-          }
-          const taskDef = moddle.create('zeebe:TaskDefinition', { type: el.properties.taskType, retries: el.properties.taskRetries || '3' });
-          taskDef.$parent = bo.extensionElements;
-          bo.extensionElements.values.push(taskDef);
-        }
+      if (el.properties.taskType && moddle.getPackage('zeebe')) {
+        setZeebeTaskDefinition(moddle, modeling, shape, el.properties.taskType, el.properties.taskRetries);
       }
       if (Object.keys(props).length > 0) {
         modeling.updateProperties(shape, props);

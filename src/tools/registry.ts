@@ -39,6 +39,8 @@ export const addTaskSchema = z.object({
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
   messageRef: z.string().optional().describe('Message name for ReceiveTask (required by Camunda validation) or SendTask (optional). Find-or-creates a bpmn:Message root element with this name.'),
+  taskType: z.string().optional().describe('Zeebe job type. Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask. Settable here at creation instead of a follow-up set_properties/patch_element call.'),
+  taskRetries: z.string().optional().describe('Zeebe retry count for taskType (default "3").'),
 });
 
 /**
@@ -176,7 +178,7 @@ export const setPropertiesSchema = z.object({
   implementationValue: z.string().optional().describe('Class name, expression, or connector ID'),
   taskTopic: z.string().optional().describe('External task topic (Camunda 7)'),
   taskPriority: z.string().optional().describe('Task priority'),
-  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8). Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
   taskRetries: z.string().optional().describe('Zeebe retry count'),
   isExecutable: z.boolean().optional().describe('Process isExecutable flag'),
 });
@@ -457,7 +459,7 @@ export const patchElementSchema = z.object({
   implementationValue: z.string().optional(),
   taskTopic: z.string().optional(),
   taskPriority: z.string().optional(),
-  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8). Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
   taskRetries: z.string().optional(),
   isExecutable: z.boolean().optional(),
   waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional().describe('New waypoints for sequence/message flows'),
@@ -521,6 +523,9 @@ export const addElementSchema = z.object({
   signalRef: z.string().optional().describe('start/end/event (SignalEventDefinition): signal name. Find-or-creates a bpmn:Signal root element.'),
   escalationRef: z.string().optional().describe('end/event (EscalationEventDefinition): escalation name. Find-or-creates a bpmn:Escalation root element.'),
   escalationCode: z.string().optional().describe('Optional escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef.'),
+  // task
+  taskType: z.string().optional().describe('task: Zeebe job type. Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
+  taskRetries: z.string().optional().describe('task: Zeebe retry count for taskType (default "3").'),
   // subprocess / pool / group
   width: z.number().optional().describe('subprocess/pool/group: width'),
   height: z.number().optional().describe('subprocess/pool/group: height'),
