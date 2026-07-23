@@ -7,7 +7,8 @@
  * `webContents.executeJavaScript()`.
  */
 
-import { LayoutEngine } from '../src/tools/layout-engine';
+// @ts-ignore — elkjs ships as a GWT-compiled UMD bundle; resolved via package main field
+import ELK from 'elkjs';
 
 interface BpmnServices {
   modeling: any;
@@ -1812,20 +1813,29 @@ async function buildProcess(
 }
 
 /* ------------------------------------------------------------------ */
-/*  auto_layout — smart branch-aware layout engine                    */
+/*  auto_layout — ELK-based layout engine                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Options accepted by the smartAutoLayout tool.
+ * ELK controls most of the layout; these are the user-tunable knobs.
+ */
 interface LayoutOpts {
+  /** Minimum gap between nodes on different branches (pixels). Default 50. */
   branchSpacing: number;
+  /** Minimum gap between nodes in the same layer (pixels). Default 80. */
   horizontalSpacing: number;
-  flowRouting: 'orthogonal' | 'direct';
+  /** Edge routing style passed to ELK. Default 'orthogonal'. */
+  flowRouting: 'orthogonal' | 'polyline' | 'direct';
+  /** Alignment of nodes at a merge gateway. ELK handles this automatically. */
   mergeAlignment: 'center' | 'top-branch';
+  /** Where to pin boundary events on their host after ELK layout. */
   boundaryEventPosition: 'bottom' | 'bottom-right';
 }
 
 const DEFAULT_LAYOUT_OPTS: LayoutOpts = {
-  branchSpacing: 140,
-  horizontalSpacing: 80,
+  branchSpacing: 80,
+  horizontalSpacing: 120,
   flowRouting: 'orthogonal',
   mergeAlignment: 'center',
   boundaryEventPosition: 'bottom',
@@ -1840,316 +1850,188 @@ async function smartAutoLayout(
   const userOpts = (params.options as Partial<LayoutOpts>) || {};
   const opts: LayoutOpts = { ...DEFAULT_LAYOUT_OPTS, ...userOpts };
 
-  // Wait for rendering to complete so all element positions are up to date
+  // Wait for the renderer to settle so all element positions are current
   await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
-  // Resolve scope: either a specific subprocess or the root
+  // Resolve layout scope: a specific subprocess or the root process
   const scope = scopeId ? elementRegistry.get(scopeId) : canvas.getRootElement();
   if (!scope) throw new Error(scopeId ? `Element "${scopeId}" not found` : 'No diagram open');
 
-  // Gather shapes and connections within scope
   const allElements: any[] = elementRegistry.getAll();
+
+  // Collect shapes directly inside this scope (skip labels, boundary events, connections)
   const shapes = allElements.filter((el: any) => {
     if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
     if (el.waypoints) return false;
-    if (el.type === 'bpmn:BoundaryEvent') return false; // handled separately
+    if (el.type === 'bpmn:BoundaryEvent') return false; // repositioned separately after layout
     return el.parent === scope;
   });
+
+  // Collect connections whose source AND target are inside this scope
   const connections = allElements.filter((el: any) => {
     if (!el.waypoints) return false;
-    return el.source?.parent === scope || el.target?.parent === scope;
+    return el.source?.parent === scope && el.target?.parent === scope;
   });
 
   if (shapes.length === 0) return { positioned: 0, routed: 0 };
 
-  // Build adjacency: outgoing map and incoming count
-  const outgoing = new Map<string, { target: any; conn: any; name?: string }[]>();
-  const incomingCount = new Map<string, number>();
-  for (const s of shapes) {
-    outgoing.set(s.id, []);
-    incomingCount.set(s.id, 0);
-  }
-  for (const c of connections) {
-    const sid = c.source?.id, tid = c.target?.id;
-    if (!sid || !tid) continue;
-    if (!outgoing.has(sid) || !incomingCount.has(tid)) continue;
-    outgoing.get(sid)!.push({ target: c.target, conn: c, name: c.businessObject?.name });
-    incomingCount.set(tid, (incomingCount.get(tid) || 0) + 1);
-  }
+  // ── Build ELK graph ──────────────────────────────────────────────
 
-  // Find start nodes (no incoming within scope)
-  const startNodes = shapes.filter((s: any) =>
-    (incomingCount.get(s.id) || 0) === 0 || s.type === 'bpmn:StartEvent'
-  );
-  if (startNodes.length === 0) {
-    // Fallback: pick the first element
-    startNodes.push(shapes[0]);
-  }
+  const elkEdgeRouting =
+    opts.flowRouting === 'orthogonal' ? 'ORTHOGONAL'
+    : opts.flowRouting === 'polyline' ? 'POLYLINE'
+    : 'SPLINES';
 
-  // BFS to assign column (x) and row (y) per element
-  // Track: column index, row offset, and branch assignments
-  const colMap = new Map<string, number>(); // element id → column index
-  const rowMap = new Map<string, number>(); // element id → row offset
-  const visited = new Set<string>();
-  const queue: { el: any; col: number; row: number }[] = [];
+  const elk = new ELK();
 
-  for (const start of startNodes) {
-    if (visited.has(start.id)) continue;
-    queue.push({ el: start, col: 0, row: 0 });
-    visited.add(start.id);
-  }
-
-  let maxCol = 0;
-  let iterations = 0;
-  const maxIterations = shapes.length * shapes.length; // safety cap for cycles
-
-  while (queue.length > 0 && iterations < maxIterations) {
-    iterations++;
-    const { el, col, row } = queue.shift()!;
-
-    // Already assigned — only update column if this path arrives later (convergence).
-    // Never re-traverse outgoing to avoid infinite loops on cycles or convergence fans.
-    const existingCol = colMap.get(el.id);
-    if (existingCol !== undefined) {
-      if (col > existingCol) colMap.set(el.id, col);
-      continue;
-    }
-
-    colMap.set(el.id, col);
-    rowMap.set(el.id, row);
-    if (col > maxCol) maxCol = col;
-
-    const targets = outgoing.get(el.id) || [];
-    const isGateway = el.type?.includes('Gateway');
-    const isBranching = isGateway && targets.length > 1;
-
-    if (isBranching) {
-      // Fan out branches vertically, centered on current row.
-      // Only forward (unvisited) targets get row assignments.
-      const forwardTargets = targets.filter(t => !visited.has(t.target.id));
-
-      const branchCount = forwardTargets.length;
-      if (branchCount > 0) {
-        const startRow = row - ((branchCount - 1) * opts.branchSpacing) / 2;
-        forwardTargets.forEach((t, idx) => {
-          const branchRow = startRow + idx * opts.branchSpacing;
-          visited.add(t.target.id);
-          rowMap.set(t.target.id, branchRow);
-          queue.push({ el: t.target, col: col + 1, row: branchRow });
-        });
-      }
-
-      // Already-visited targets (convergence points): push a col-update entry.
-      // They will hit the early-exit above and only update their column — no re-traversal.
-      for (const t of targets) {
-        if (visited.has(t.target.id)) {
-          queue.push({ el: t.target, col: col + 1, row });
-        }
-      }
-    } else {
-      for (const t of targets) {
-        if (!visited.has(t.target.id)) {
-          visited.add(t.target.id);
-          queue.push({ el: t.target, col: col + 1, row });
-        } else {
-          // Convergence: push a col-update entry only (early-exit above prevents re-traversal).
-          queue.push({ el: t.target, col: col + 1, row });
-        }
-      }
-    }
-  }
-
-  // Handle merge gateways: align to center of incoming branches
-  for (const s of shapes) {
-    if (!s.type?.includes('Gateway')) continue;
-    const inc = (s.incoming || []).filter((c: any) => c.source?.parent === scope);
-    if (inc.length < 2) continue;
-    // This is a merge gateway — compute average row of sources
-    const sourceRows = inc
-      .map((c: any) => rowMap.get(c.source?.id))
-      .filter((r: any): r is number => r !== undefined);
-    if (sourceRows.length >= 2) {
-      if (opts.mergeAlignment === 'center') {
-        rowMap.set(s.id, sourceRows.reduce((a: number, b: number) => a + b, 0) / sourceRows.length);
-      } else {
-        rowMap.set(s.id, Math.min(...sourceRows));
-      }
-    }
-  }
-
-  // Convert column/row to pixel coordinates
-  const baseX = (scope.x || 0) + 60;
-  const baseY = (scope.y || 0) + (scope.height ? scope.height / 2 : 200);
-
-  // Compute intended positions for all shapes
-  const intendedPositions = shapes.map((s: any) => {
-    const col = colMap.get(s.id);
-    const row = rowMap.get(s.id);
-    if (col === undefined || row === undefined) {
-      return null;
-    }
-    const elW = s.width || 36;
-    const elH = s.height || 36;
-    const targetX = baseX + col * (100 + opts.horizontalSpacing);
-    const targetY = baseY + row;
-    return {
+  const elkGraph = {
+    id: 'root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.edgeRouting': elkEdgeRouting,
+      'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.horizontalSpacing),
+      'elk.spacing.nodeNode': String(opts.branchSpacing),
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+      'elk.padding': '[top=40,left=40,bottom=40,right=40]',
+    },
+    children: shapes.map((s: any) => ({
       id: s.id,
-      x: targetX - elW / 2,  // top-left x (LayoutEngine works with top-left, not center)
-      y: targetY - elH / 2,  // top-left y
-      width: elW,
-      height: elH,
-    };
-  }).filter((p: any): p is { id: string; x: number; y: number; width: number; height: number } => p !== null);
+      width: s.width || 100,
+      height: s.height || 80,
+    })),
+    edges: connections.map((c: any) => ({
+      id: c.id,
+      sources: [c.source.id],
+      targets: [c.target.id],
+    })),
+  };
 
-  // Resolve overlaps using LayoutEngine
-  const layoutEngine = new LayoutEngine([]);
-  const nudges = layoutEngine.resolveOverlaps(intendedPositions);
-
-  // Build a map of nudged positions (id → adjusted top-left coords)
-  const nudgeMap = new Map<string, { x: number; y: number }>();
-  for (const move of nudges) {
-    const intended = intendedPositions.find(p => p.id === move.id);
-    if (intended) {
-      nudgeMap.set(move.id, {
-        x: intended.x + move.delta.x,
-        y: intended.y + move.delta.y,
-      });
-    }
+  // Run ELK layout — this is async but runs synchronously in the bundled build
+  let layoutResult: any;
+  try {
+    layoutResult = await elk.layout(elkGraph);
+  } catch (err: any) {
+    throw new Error(`ELK layout failed: ${err.message || err}`);
   }
 
-  // Wrap all positioning + routing in a single undoable compound command
+  // Build a map of id → ELK-assigned position (ELK returns top-left x/y)
+  const elkPositions = new Map<string, { x: number; y: number }>();
+  for (const node of (layoutResult.children || [])) {
+    elkPositions.set(node.id, { x: node.x, y: node.y });
+  }
+
+  // ELK edge routing: map from connection id → array of bend-points
+  const elkEdges = new Map<string, Array<{ x: number; y: number }>>();
+  for (const edge of (layoutResult.edges || [])) {
+    const sections = edge.sections || [];
+    if (sections.length === 0) continue;
+    const section = sections[0];
+    const waypoints: Array<{ x: number; y: number }> = [];
+    if (section.startPoint) waypoints.push(section.startPoint);
+    for (const bp of (section.bendPoints || [])) waypoints.push(bp);
+    if (section.endPoint) waypoints.push(section.endPoint);
+    if (waypoints.length >= 2) elkEdges.set(edge.id, waypoints);
+  }
+
+  // ── Apply positions and waypoints ───────────────────────────────
+
   let positioned = 0;
   let routed = 0;
 
   commandStack.execute('mcp.compound', { fn: () => {
 
-  for (const s of shapes) {
-    const col = colMap.get(s.id);
-    const row = rowMap.get(s.id);
-    if (col === undefined || row === undefined) continue;
+    // Move each shape to ELK's computed position
+    for (const s of shapes) {
+      const pos = elkPositions.get(s.id);
+      if (!pos) continue;
 
-    const elW = s.width || 36;
-    const elH = s.height || 36;
+      const elW = s.width || 36;
+      const elH = s.height || 36;
 
-    // Check if this element was nudged for overlap avoidance
-    const nudged = nudgeMap.get(s.id);
-    let targetX: number, targetY: number;
-    if (nudged) {
-      // Use nudged top-left, convert back to center
-      targetX = nudged.x + elW / 2;
-      targetY = nudged.y + elH / 2;
-    } else {
-      // Use original column/row-based position
-      targetX = baseX + col * (100 + opts.horizontalSpacing);
-      targetY = baseY + row;
-    }
+      // ELK coordinates are relative to the graph root; bpmn-js moveElements
+      // takes a delta from the current center, so compute that delta.
+      const targetCx = pos.x + elW / 2;
+      const targetCy = pos.y + elH / 2;
+      const currentCx = s.x + elW / 2;
+      const currentCy = s.y + elH / 2;
+      const dx = targetCx - currentCx;
+      const dy = targetCy - currentCy;
 
-    const cx = s.x + elW / 2;
-    const cy = s.y + elH / 2;
-    const dx = targetX - cx;
-    const dy = targetY - cy;
-
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([s], { x: dx, y: dy });
-        positioned++;
-      } catch {
-        // Skip elements that fail to move
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        try {
+          modeling.moveElements([s], { x: dx, y: dy });
+          positioned++;
+        } catch {
+          // Skip elements that can't be moved
+        }
       }
     }
-  }
 
-  // Position boundary events on their host's edge
-  const boundaryEvents = allElements.filter((el: any) =>
-    el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
-  );
-  for (const be of boundaryEvents) {
-    const host = be.host || be.parent;
-    if (!host || !host.width) continue;
-    const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
-    const beCx = be.x + (be.width || 36) / 2;
-    const beCy = be.y + (be.height || 36) / 2;
-    const dx = pos.x - beCx;
-    const dy = pos.y - beCy;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([be], { x: dx, y: dy });
-        positioned++;
-      } catch { /* skip */ }
-    }
-  }
-
-  // Position boundary event TARGET tasks below their boundary event.
-  // Also find targets via the connections array (boundary event flows may
-  // not be in `connections` since they're filtered by parent scope).
-  const beFlows = allElements.filter((el: any) =>
-    el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
-  );
-  for (const conn of beFlows) {
-    const be = elementRegistry.get(conn.source.id);
-    const target = elementRegistry.get(conn.target?.id);
-    if (!be || !target || !target.width) continue;
-    const beCx = be.x + (be.width || 36) / 2;
-    const beBottom = be.y + (be.height || 36);
-    const targetW = target.width || 100;
-    const targetH = target.height || 80;
-    const targetCx = target.x + targetW / 2;
-    const targetCy = target.y + targetH / 2;
-    const desiredX = beCx;
-    const desiredY = beBottom + 60 + targetH / 2;
-    const dx = desiredX - targetCx;
-    const dy = desiredY - targetCy;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([target], { x: dx, y: dy });
-        positioned++;
-      } catch { /* skip — no direct mutation fallback */ }
-    }
-  }
-
-  // Route connections orthogonally
-  if (opts.flowRouting === 'orthogonal') {
+    // Apply ELK-computed edge waypoints
     for (const conn of connections) {
-      const src = conn.source, tgt = conn.target;
-      if (!src || !tgt) continue;
-
-      const srcCx = src.x + (src.width || 36) / 2;
-      const srcCy = src.y + (src.height || 36) / 2;
-      const tgtCx = tgt.x + (tgt.width || 36) / 2;
-      const tgtCy = tgt.y + (tgt.height || 36) / 2;
-      const srcRight = src.x + (src.width || 36);
-      const tgtLeft = tgt.x;
-
-      // Check if flow is a loop-back (target is to the left)
-      const isLoopBack = tgtCx <= srcCx;
-
-      let newWaypoints: { x: number; y: number }[];
-      if (isLoopBack) {
-        // Route below: source bottom → down → left → up → target bottom
-        const loopY = Math.max(srcCy, tgtCy) + (src.height || 80) / 2 + 60;
-        newWaypoints = [
-          { x: srcCx, y: srcCy + (src.height || 36) / 2 },
-          { x: srcCx, y: loopY },
-          { x: tgtCx, y: loopY },
-          { x: tgtCx, y: tgtCy + (tgt.height || 36) / 2 },
-        ];
-      } else if (Math.abs(srcCy - tgtCy) < 3) {
-        // Same y — straight horizontal
-        newWaypoints = [
-          { x: srcRight, y: srcCy },
-          { x: tgtLeft, y: tgtCy },
-        ];
-      } else {
-        // L-shaped routing
-        const midX = (srcRight + tgtLeft) / 2;
-        newWaypoints = [
-          { x: srcRight, y: srcCy },
-          { x: midX, y: srcCy },
-          { x: midX, y: tgtCy },
-          { x: tgtLeft, y: tgtCy },
-        ];
+      const waypoints = elkEdges.get(conn.id);
+      if (!waypoints || waypoints.length < 2) continue;
+      try {
+        if (typeof modeling.updateWaypoints === 'function') {
+          modeling.updateWaypoints(conn, waypoints);
+        } else {
+          modeling.layoutConnection(conn, {
+            connectionStart: waypoints[0],
+            connectionEnd: waypoints[waypoints.length - 1],
+          });
+        }
+        routed++;
+      } catch {
+        // Skip connections that fail to route
       }
+    }
 
+    // ── Reposition boundary events on their host's perimeter ────────
+    // ELK doesn't know about boundary events; pin them back after layout.
+    const boundaryEvents = allElements.filter((el: any) =>
+      el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
+    );
+    for (const be of boundaryEvents) {
+      const host = be.host || be.parent;
+      if (!host || !host.width) continue;
+      const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
+      const beCx = be.x + (be.width || 36) / 2;
+      const beCy = be.y + (be.height || 36) / 2;
+      const dx = pos.x - beCx;
+      const dy = pos.y - beCy;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        try {
+          modeling.moveElements([be], { x: dx, y: dy });
+          positioned++;
+        } catch { /* skip */ }
+      }
+    }
+
+    // ── Route boundary event outgoing flows ─────────────────────────
+    // These connections were excluded from the ELK graph (boundary events
+    // are excluded from ELK), so route them with a simple L-shape.
+    const beFlows = allElements.filter((el: any) =>
+      el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
+    );
+    for (const conn of beFlows) {
+      const be = elementRegistry.get(conn.source.id);
+      const target = elementRegistry.get(conn.target?.id);
+      if (!be || !target || !target.width) continue;
+      const beCx = be.x + (be.width || 36) / 2;
+      const beBottom = be.y + (be.height || 36);
+      const targetW = target.width || 100;
+      const targetH = target.height || 80;
+      const targetCx = target.x + targetW / 2;
+      const targetTop = target.y;
+      const newWaypoints = [
+        { x: beCx, y: beBottom },
+        { x: beCx, y: beBottom + (targetTop - beBottom) / 2 },
+        { x: targetCx, y: beBottom + (targetTop - beBottom) / 2 },
+        { x: targetCx, y: targetTop },
+      ];
       try {
         if (typeof modeling.updateWaypoints === 'function') {
           modeling.updateWaypoints(conn, newWaypoints);
@@ -2160,13 +2042,10 @@ async function smartAutoLayout(
           });
         }
         routed++;
-      } catch {
-        // Skip connections that fail to route
-      }
+      } catch { /* skip */ }
     }
-  }
 
-  }}); // end mcp.compound — all position + route changes are a single undo step
+  }}); // end mcp.compound
 
   return { positioned, routed, elementCount: shapes.length };
 }

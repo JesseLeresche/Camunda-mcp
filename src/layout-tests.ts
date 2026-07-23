@@ -21,7 +21,7 @@ const MCP_API_KEY = process.env.MCP_API_KEY;
 // ── Layout options to experiment with ──────────────────────────────────────
 // Edit these values, re-run, press Ctrl+Z in the Modeler to undo, repeat.
 const LAYOUT_OPTIONS = {
-  horizontalSpacing: 50,        // px gap between columns (default 50)
+  horizontalSpacing: 80,        // px gap between columns (default 50)
   branchSpacing: 120,           // px between parallel branches (default 120)
   flowRouting: 'orthogonal',    // 'orthogonal' | 'direct'
   mergeAlignment: 'center',     // 'center' | 'top-branch'
