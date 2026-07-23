@@ -298,6 +298,14 @@ function addTask(
     }
   }
 
+  // ReceiveTask requires a subscription correlationKey alongside messageRef
+  // for Camunda validation — Zeebe needs it to correlate the incoming
+  // message against a running process instance.
+  const correlationKey = params.correlationKey as string | undefined;
+  if (correlationKey && type === 'bpmn:ReceiveTask') {
+    setZeebeSubscription(moddle, modeling, shape, correlationKey);
+  }
+
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
 }
 
@@ -559,9 +567,12 @@ function findOrCreateRootElement(
   );
   if (existing) return existing;
 
+  // Camunda validation requires a non-empty error/escalation code whenever
+  // errorRef/escalationRef is set — default it to the name if none was given
+  // so this can never be silently left blank.
   const props: Record<string, unknown> = { name };
-  if (code && refType === 'bpmn:Error') props.errorCode = code;
-  if (code && refType === 'bpmn:Escalation') props.escalationCode = code;
+  if (refType === 'bpmn:Error') props.errorCode = code || name;
+  if (refType === 'bpmn:Escalation') props.escalationCode = code || name;
 
   // Use bpmnFactory (not moddle.create) so the element gets an auto-assigned
   // id via the Ids service — without an id, bpmn-moddle can't serialize a
@@ -654,6 +665,16 @@ function addEvent(
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
     modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+
+    // Message Catch/Boundary events require a subscription correlationKey
+    // alongside messageRef — not applicable to Throw events (nothing caught).
+    if (
+      eventDefType === 'bpmn:MessageEventDefinition' &&
+      params.correlationKey &&
+      (type === 'bpmn:IntermediateCatchEvent' || type === 'bpmn:BoundaryEvent')
+    ) {
+      setZeebeSubscription(moddle, modeling, shape, params.correlationKey as string);
+    }
   }
 
   if (name) modeling.updateLabel(shape, name);
@@ -712,6 +733,30 @@ function setZeebeTaskDefinition(
   modeling.updateProperties(element, { extensionElements: extElements });
 }
 
+/**
+ * Attaches (or replaces) a zeebe:Subscription extension element with a
+ * correlationKey on anything that *catches* a message (Receive Tasks,
+ * Message Catch/Boundary Events). Required by Camunda validation alongside
+ * messageRef — without it, Zeebe has no process-instance variable to
+ * correlate the incoming message against. Not applicable to Send Tasks,
+ * Message Throw Events, or Message Start Events (nothing to correlate yet).
+ */
+function setZeebeSubscription(
+  moddle: any,
+  modeling: any,
+  element: any,
+  correlationKey: string,
+): void {
+  const bo = element.businessObject;
+  let extElements = bo.extensionElements;
+  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:Subscription');
+  const subscription = moddle.create('zeebe:Subscription', { correlationKey });
+  extElements.values.push(subscription);
+  modeling.updateProperties(element, { extensionElements: extElements });
+}
+
 /* ------------------------------------------------------------------ */
 /*  Phase 2 — Element Configuration                                    */
 /* ------------------------------------------------------------------ */
@@ -761,6 +806,10 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
 
   if (params.taskType && hasZeebe) {
     setZeebeTaskDefinition(moddle, modeling, element, params.taskType as string, params.taskRetries as string | undefined);
+  }
+
+  if (params.correlationKey && hasZeebe) {
+    setZeebeSubscription(moddle, modeling, element, params.correlationKey as string);
   }
 
   return { elementId, updated: true };
@@ -1859,6 +1908,10 @@ async function buildProcess(
         const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        // Boundary events always "catch" — require correlationKey alongside a message ref.
+        if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && el.properties?.correlationKey) {
+          setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
+        }
       }
 
     // Handle start events (typed, e.g. Message Start Event) and intermediate events
@@ -1870,6 +1923,14 @@ async function buildProcess(
         const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        // Only intermediateCatchEvent "catches" — startEvent/intermediateThrowEvent don't correlate.
+        if (
+          el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
+          typeName === 'intermediateCatchEvent' &&
+          el.properties?.correlationKey
+        ) {
+          setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
+        }
       }
 
     // Standard elements
@@ -1901,6 +1962,9 @@ async function buildProcess(
         if (definitions) {
           props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', el.properties.messageRef);
         }
+      }
+      if (el.properties.correlationKey && shape.type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe')) {
+        setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
       }
       if (el.properties.taskType && moddle.getPackage('zeebe')) {
         setZeebeTaskDefinition(moddle, modeling, shape, el.properties.taskType, el.properties.taskRetries);
