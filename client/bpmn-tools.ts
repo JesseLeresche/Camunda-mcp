@@ -492,10 +492,10 @@ function linkFormZeebe(
 ) {
   // Try embedding the form JSON at process level first (requires zeebe:UserTaskForm)
   let embedded = false;
-  let formKey = '';
+  let userTaskFormId = '';
 
   try {
-    const userTaskFormId = `userTaskForm_${bo.id}`;
+    userTaskFormId = `userTaskForm_${bo.id}`;
     const rootElement = canvas.getRootElement();
     const process = rootElement.businessObject;
 
@@ -512,7 +512,6 @@ function linkFormZeebe(
     });
     processExt.values.push(userTaskForm);
 
-    formKey = `camunda-forms:bpmn:${userTaskFormId}`;
     embedded = true;
     console.log('[camunda-mcp] Embedded form JSON via zeebe:UserTaskForm');
   } catch (err: any) {
@@ -529,15 +528,14 @@ function linkFormZeebe(
   // Remove existing form definitions
   taskExt.values = taskExt.values.filter((v: any) => v.$type !== 'zeebe:FormDefinition');
 
-  const formDefProps: any = {};
-  if (embedded) {
-    formDefProps.formKey = formKey;
-  } else {
-    // Reference by formId — the form would be deployed separately
-    formDefProps.formId = formId;
-  }
-
-  const formDef = moddle.create('zeebe:FormDefinition', formDefProps);
+  // formId must reference the embedded zeebe:UserTaskForm's own id (or the
+  // deployed form's id, in the non-embedded case) — the compat linter
+  // rejects `formKey` alone (`Element of type <zeebe:FormDefinition> must
+  // have property <externalReference> or <formId>`), even though the moddle
+  // schema still accepts it as a legacy attribute.
+  const formDef = moddle.create('zeebe:FormDefinition', {
+    formId: embedded ? userTaskFormId : formId,
+  });
   taskExt.values.push(formDef);
 
   modeling.updateProperties(taskElement, { extensionElements: taskExt });
@@ -545,7 +543,6 @@ function linkFormZeebe(
   return {
     taskId: bo.id, formId, mode: 'zeebe',
     embedded,
-    ...(embedded ? { formKey } : {}),
     message: embedded
       ? `Embedded and linked form "${formId}" to task "${bo.id}" (Camunda 8)`
       : `Linked form "${formId}" to task "${bo.id}" by reference (Camunda 8)`,
