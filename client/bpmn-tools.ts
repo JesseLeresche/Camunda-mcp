@@ -1752,7 +1752,7 @@ function patchElement(
   const propKeys = [
     'name', 'documentation', 'conditionExpression', 'implementationType',
     'implementationValue', 'taskTopic', 'taskPriority', 'taskType',
-    'taskRetries', 'isExecutable',
+    'taskRetries', 'correlationKey', 'isExecutable',
   ];
   const hasProps = propKeys.some(k => params[k] !== undefined);
   if (hasProps) {
