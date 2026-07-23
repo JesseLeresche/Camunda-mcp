@@ -45,6 +45,7 @@ declare global {
         name: string;
         filePath?: string;
       }>;
+      openDiagram: (filePath: string) => Promise<{ id: string; name: string; filePath?: string }>;
       autoLayout: () => Promise<{ applied: boolean }>;
     };
   }
@@ -71,6 +72,7 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     window.__mcpTabManager = {
       listTabs: () => this.listTabs(),
       switchTab: (params) => this.switchTab(params),
+      openDiagram: (filePath) => this.openDiagram(filePath),
       autoLayout: () => this.autoLayout(),
     };
 
@@ -166,6 +168,34 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
       name: target.name || target.title || 'Untitled',
       filePath: targetPath,
     };
+  }
+
+  /**
+   * Opens (or focuses, if already open) a file by path via Modeler's own
+   * 'open-diagram' action — unlike shell.openPath(), this never touches the
+   * OS file-association layer, so it can't get stuck behind an "open with"
+   * picker for unassociated file types.
+   */
+  private async openDiagram(filePath: string): Promise<{ id: string; name: string; filePath?: string }> {
+    const { triggerAction } = this.props;
+    await triggerAction('open-diagram', { path: filePath });
+
+    // app.activeTabChanged may land asynchronously relative to triggerAction's
+    // resolution — poll briefly for the new tab to register.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const activeTab = this._activeTabId ? this._tabs.get(this._activeTabId) : undefined;
+      if (activeTab?.file?.path === filePath) {
+        return {
+          id: activeTab.id,
+          name: activeTab.name || activeTab.title || 'Untitled',
+          filePath: activeTab.file?.path,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    throw new Error(`open-diagram completed but no tab for "${filePath}" registered within 3s`);
   }
 
   private async autoLayout(): Promise<{ applied: boolean; action?: string; error?: string }> {

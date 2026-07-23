@@ -439,6 +439,8 @@ export const buildProcessSchema = z.object({
       signalRef: z.string().optional().describe('For endEventSignal or an eventDefinitionType of bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
       escalationRef: z.string().optional().describe('For endEventEscalation or an eventDefinitionType of bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
       escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
+      timerValue: z.string().optional().describe('For eventDefinitionType bpmn:TimerEventDefinition (startEvent, intermediate events, boundaryEvent): ISO 8601 timer expression (e.g. PT1H, R/PT5M).'),
+      timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type when eventDefinitionType is bpmn:TimerEventDefinition (default timeDuration).'),
     }).optional().describe('Properties to set on the element after creation'),
     width: z.number().optional().describe('Width for subprocesses/groups'),
     height: z.number().optional().describe('Height for subprocesses/groups'),

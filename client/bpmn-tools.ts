@@ -295,12 +295,7 @@ function addStartEvent(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps: any = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
-    if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
-      const timerType = (params.timerType as string) || 'timeDuration';
-      const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
-      eventDefProps[timerType] = formalExpression;
-    }
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
     const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
@@ -648,6 +643,7 @@ function findOrCreateRootElement(
  */
 function eventDefRefProps(
   bpmnFactory: any,
+  moddle: any,
   definitions: any,
   eventDefType: string,
   params: Record<string, unknown>,
@@ -662,6 +658,9 @@ function eventDefRefProps(
     props.signalRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Signal', params.signalRef as string);
   } else if (eventDefType === 'bpmn:EscalationEventDefinition' && params.escalationRef) {
     props.escalationRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Escalation', params.escalationRef as string, params.escalationCode as string | undefined);
+  } else if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
+    const timerType = (params.timerType as string) || 'timeDuration';
+    props[timerType] = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
   }
   return props;
 }
@@ -711,12 +710,7 @@ function addEvent(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps: any = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
-    if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
-      const timerType = (params.timerType as string) || 'timeDuration';
-      const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
-      eventDefProps[timerType] = formalExpression;
-    }
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
     const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
@@ -742,7 +736,7 @@ function addEvent(
 
 function addSubprocess(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:SubProcess';
   const name = (params.name as string) || '';
@@ -762,7 +756,7 @@ function addSubprocess(
   const shape = modeling.createShape(shapeAttrs, { x, y, width, height }, parent);
 
   if (calledElement && type === 'bpmn:CallActivity') {
-    modeling.updateProperties(shape, { calledElement });
+    setZeebeCalledElement(moddle, modeling, shape, calledElement);
   }
   if (name) modeling.updateLabel(shape, name);
 
@@ -788,6 +782,30 @@ function setZeebeTaskDefinition(
   extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
   const taskDef = moddle.create('zeebe:TaskDefinition', { type: taskType, retries: taskRetries || '3' });
   extElements.values.push(taskDef);
+  modeling.updateProperties(element, { extensionElements: extElements });
+}
+
+/**
+ * Attaches (or replaces) a zeebe:CalledElement extension element on a
+ * CallActivity. `modeling.updateProperties(shape, { calledElement })` sets
+ * the native bpmn:CallActivity/@calledElement attribute, which Camunda 8
+ * ignores — Zeebe resolves the target process from zeebe:CalledElement's
+ * processId instead, so that attribute alone leaves the call activity
+ * pointing nowhere despite looking configured.
+ */
+function setZeebeCalledElement(
+  moddle: any,
+  modeling: any,
+  element: any,
+  processId: string,
+): void {
+  const bo = element.businessObject;
+  let extElements = bo.extensionElements;
+  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:CalledElement');
+  const calledElementDef = moddle.create('zeebe:CalledElement', { processId, propagateAllChildVariables: false });
+  extElements.values.push(calledElementDef);
   modeling.updateProperties(element, { extensionElements: extElements });
 }
 
@@ -1365,7 +1383,7 @@ function addEndEventTyped(
   if (eventDefType !== 'none') {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
-    const eventDefProps = eventDefRefProps(bpmnFactory, definitions, eventDefType, params);
+    const eventDefProps = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
     const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
@@ -1733,7 +1751,14 @@ async function batchOperations(
     }
   }
 
-  return { results };
+  let validation: Record<string, unknown>;
+  try {
+    validation = await validateDiagram({}, services);
+  } catch (err: any) {
+    validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+  }
+
+  return { results, validation };
 }
 
 /**
@@ -1986,10 +2011,11 @@ async function buildProcess(
       shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
       const bo = shape.businessObject;
       const defType = END_EVENT_DEFS[typeName];
-      const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), defType, el.properties || {});
-      const eventDef = bpmnFactory.create(defType, refProps);
+      const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), defType, el.properties || {});
+      const eventDef = moddle.create(defType, refProps);
       eventDef.$parent = bo;
       bo.eventDefinitions = [eventDef];
+      modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
 
     // Handle subprocesses
     } else if (typeName === 'subprocess' || typeName === 'callActivity') {
@@ -2002,7 +2028,7 @@ async function buildProcess(
       const h = (el.height as number) || 200;
       shape = modeling.createShape(shapeAttrs, { x, y, width: w, height: h }, parent);
       if (el.calledElement && typeName === 'callActivity') {
-        modeling.updateProperties(shape, { calledElement: el.calledElement });
+        setZeebeCalledElement(moddle, modeling, shape, el.calledElement as string);
       }
 
     // Handle boundary events
@@ -2013,19 +2039,18 @@ async function buildProcess(
       if (!host) throw new Error(`Host element "${hostId}" not found for BoundaryEvent`);
       const boundaryPos = getBoundaryPosition(host, el.boundaryPosition || 'bottom');
       shape = modeling.createShape(
-        { type: 'bpmn:BoundaryEvent', host },
+        { type: 'bpmn:BoundaryEvent', cancelActivity: el.cancelActivity !== false },
         boundaryPos,
-        host.parent,
+        host,
+        { attach: true },
       );
-      if (el.cancelActivity === false) {
-        modeling.updateProperties(shape, { cancelActivity: false });
-      }
       if (el.eventDefinitionType) {
         const bo = shape.businessObject;
-        const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
-        const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
+        const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = moddle.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
         // Boundary events always "catch" — require correlationKey on the Message itself.
         if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && el.properties?.correlationKey && refProps.messageRef) {
           setMessageSubscription(moddle, refProps.messageRef, el.properties.correlationKey);
@@ -2037,10 +2062,11 @@ async function buildProcess(
       shape = modeling.createShape({ type: TYPE_MAP[typeName] }, { x, y }, parent);
       if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
         const bo = shape.businessObject;
-        const refProps = eventDefRefProps(bpmnFactory, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
-        const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
+        const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = moddle.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
         // Only intermediateCatchEvent "catches" — startEvent/intermediateThrowEvent don't correlate.
         if (
           el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
@@ -2143,13 +2169,40 @@ async function buildProcess(
     } catch {
       // Auto-layout is best-effort — don't fail the whole build
     }
+    // smartAutoLayout only lays out one scope at a time (children of the
+    // element passed as elementId, or the root process if omitted) — it
+    // never recurses into subprocesses, so any expanded subprocess built in
+    // this call would otherwise keep its children clustered at their
+    // original creation position instead of spread out inside the (now
+    // correctly sized and placed) subprocess box.
+    for (const el of elements) {
+      if (el.type !== 'subprocess' || (el.collapsed ?? false)) continue;
+      const realId = idMap[el.id as string];
+      if (!realId) continue;
+      try {
+        await smartAutoLayout({ diagramId: '', elementId: realId }, services);
+      } catch {
+        // Best-effort — leave that subprocess's children where they are
+      }
+    }
   }
 
-  return {
+  const result: Record<string, unknown> = {
     idMap,
     elementCount: elements.length,
     flowCount: flowIds.length,
   };
+
+  // Surface validation in the same turn instead of requiring a separate
+  // query_diagram {operation: "validate"} follow-up call — non-blocking,
+  // never fails the build itself.
+  try {
+    result.validation = await validateDiagram({}, services);
+  } catch (err: any) {
+    result.validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+  }
+
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2215,6 +2268,24 @@ async function smartAutoLayout(
 
   if (shapes.length === 0) return { positioned: 0, routed: 0 };
 
+  // Boundary events are excluded from ELK's graph (see below), so a
+  // boundary event's outgoing flow is never a real ELK edge — which leaves
+  // its target with no edge connecting it to the graph at all. ELK then
+  // treats that target as a disconnected node and places it arbitrarily,
+  // forcing the manual L-route (applied post-layout, below) to stretch
+  // across whatever arbitrary distance ELK picked. Give ELK a synthetic
+  // host->target edge (never applied to the diagram, layout hint only) so
+  // it places these targets adjacent to the task they're actually next to.
+  const shapeIds = new Set(shapes.map((s: any) => s.id));
+  const syntheticEdges: Array<{ id: string; sources: string[]; targets: string[] }> = [];
+  for (const el of allElements) {
+    if (!el.waypoints || el.source?.type !== 'bpmn:BoundaryEvent') continue;
+    if (el.target?.parent !== scope) continue;
+    const host = el.source.host || el.source.parent;
+    if (!host || !shapeIds.has(host.id) || !shapeIds.has(el.target.id)) continue;
+    syntheticEdges.push({ id: `synthetic-${el.id}`, sources: [host.id], targets: [el.target.id] });
+  }
+
   // ── Build ELK graph ──────────────────────────────────────────────
 
   const elkEdgeRouting =
@@ -2246,7 +2317,7 @@ async function smartAutoLayout(
       id: c.id,
       sources: [c.source.id],
       targets: [c.target.id],
-    })),
+    })).concat(syntheticEdges),
   };
 
   // Run ELK layout — this is async but runs synchronously in the bundled build

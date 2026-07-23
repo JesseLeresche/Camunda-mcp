@@ -107,24 +107,38 @@ async function createModel(
     };
   }
 
-  // Attempt to open the file in the Camunda Desktop Modeler via Electron's shell
+  // Open the file via Modeler's own 'open-diagram' action (same primitive
+  // switchTab uses) rather than shell.openPath() — shell.openPath() asks the
+  // OS to resolve a handler for .bpmn by file association, which on a
+  // machine without Modeler set as the default handler surfaces an "Open
+  // with…" picker instead of ever reaching Modeler. Going through the tab
+  // manager also gives us the real tab id directly, no polling/guessing.
+  let realDiagramId = diagramId;
+  let resolvedTab = false;
+  let warning: string | undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-    const { shell } = electron;
-    const errorMessage = await shell.openPath(filePath);
-    if (errorMessage) {
-      console.warn(`${LOG_PREFIX} shell.openPath warning: ${errorMessage}`);
-    }
-  } catch {
-    // Running outside Electron (e.g. tests) — skip shell.openPath
-    console.warn(
-      `${LOG_PREFIX} Electron not available; skipping shell.openPath`
+    const opened = await executeInRenderer(
+      `window.__mcpTabManager`
+      + ` ? window.__mcpTabManager.openDiagram(${JSON.stringify(filePath)})`
+      + ` : Promise.reject(new Error('Tab manager not initialized — ensure the plugin is loaded and at least one diagram has been opened'))`
     );
+    if (opened?.id) {
+      realDiagramId = opened.id;
+      resolvedTab = true;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`${LOG_PREFIX} Failed to open diagram via tab manager: ${message}`);
+    warning = `Could not confirm the new tab opened in Modeler (${message}). `
+      + 'Use manage_diagram {operation: "list"} to find the real tab id.';
   }
 
-  const result = { diagramId, filePath, message: `Created diagram "${name}"` };
-  console.log(`${LOG_PREFIX} Created model: ${diagramId} at ${filePath}`);
+  const result: Record<string, unknown> = { diagramId: realDiagramId, filePath, message: `Created diagram "${name}"` };
+  if (!resolvedTab) {
+    result.warning = warning ?? 'Could not confirm the new tab registered with the Modeler — '
+      + 'diagramId may not resolve. Use manage_diagram {operation: "list"} to find the real tab id.';
+  }
+  console.log(`${LOG_PREFIX} Created model: ${realDiagramId} at ${filePath} (resolved: ${resolvedTab})`);
 
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
