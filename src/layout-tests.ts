@@ -13,8 +13,6 @@
  * Layout options are at the top of this file — edit and re-run to test variations.
  */
 
-import { OccupancyMap } from './tools/layout-engine';
-
 const MCP_URL = process.env.MCP_URL ?? 'http://localhost:3100/mcp';
 const MCP_API_KEY = process.env.MCP_API_KEY;
 
@@ -109,7 +107,6 @@ function findCollisions(shapes: Shape[], padding = 0): Collision[] {
 }
 
 function reportCollisions(label: string, shapes: Shape[]) {
-  const collisions = findCollisions(shapes);
   const strictCollisions = findCollisions(shapes, 0);     // exact overlap
   const paddedCollisions = findCollisions(shapes, 5);     // within 5px
 
