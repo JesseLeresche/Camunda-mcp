@@ -1046,7 +1046,7 @@ async function importXml(params: Record<string, unknown>, { injector }: BpmnServ
  * API), so this degrades gracefully if a future Modeler version renames or
  * restructures it.
  */
-function validateDiagram(params: Record<string, unknown>, { injector }: BpmnServices) {
+async function validateDiagram(params: Record<string, unknown>, { injector }: BpmnServices) {
   const severityFilter = (params.severity as string) || 'all';
 
   let lintingSvc: any;
@@ -1057,6 +1057,19 @@ function validateDiagram(params: Record<string, unknown>, { injector }: BpmnServ
   }
   if (!lintingSvc) {
     return { issues: [], count: 0, warning: 'Linting service not available in this Modeler version — cannot report validation issues.' };
+  }
+
+  // _reports is a cache that only refreshes reactively off commandStack
+  // changes — a bulk import_xml doesn't reliably trigger it. Force a fresh
+  // lint pass before reading, so results reflect the diagram's actual
+  // current state rather than whatever was last computed.
+  try {
+    const maybePromise = lintingSvc._update?.();
+    if (maybePromise && typeof maybePromise.then === 'function') {
+      await maybePromise;
+    }
+  } catch {
+    // fall back to whatever _reports currently holds
   }
 
   const reports: any[] = Array.isArray(lintingSvc._reports) ? lintingSvc._reports : [];
