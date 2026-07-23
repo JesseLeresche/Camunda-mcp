@@ -140,14 +140,31 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     }
 
     const target = matches[0];
+    const targetPath = target.file?.path;
+
+    // Camunda Modeler's triggerAction('select-tab', ...) only supports
+    // relative 'next'/'previous' navigation — there is no plugin action to
+    // activate an arbitrary already-open tab by reference. The only
+    // reachable path that both finds-or-opens AND activates (via
+    // App#openFiles -> App#showTab) a specific tab is 'open-diagram' with a
+    // file path, which requires the tab to actually be saved to disk.
+    if (!targetPath) {
+      throw new Error(
+        `Cannot switch to tab "${target.name || target.title || 'Untitled'}" — it has no ` +
+        `saved file path, and Camunda Modeler's plugin API has no action to activate an ` +
+        `already-open tab by reference (only by file path, or relative next/previous). ` +
+        `Save the diagram first, or switch to it manually in the Modeler UI.`
+      );
+    }
+
     const { triggerAction } = this.props;
-    await triggerAction('select-tab', { tab: target });
+    await triggerAction('open-diagram', { path: targetPath });
 
     return {
       switched: true,
       tabId: target.id,
       name: target.name || target.title || 'Untitled',
-      filePath: target.file?.path,
+      filePath: targetPath,
     };
   }
 
