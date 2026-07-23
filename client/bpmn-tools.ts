@@ -17,10 +17,53 @@ interface BpmnServices {
   commandStack: any;
 }
 
+type DispatchFn = (tool: string, params: Record<string, unknown>) => Promise<any>;
+
+interface DispatchRegistryEntry {
+  container: HTMLElement;
+  dispatch: DispatchFn;
+}
+
 declare global {
   interface Window {
-    __mcpDispatch?: (tool: string, params: Record<string, unknown>) => Promise<any>;
+    __mcpDispatch?: DispatchFn;
+    __mcpDispatchRegistry?: DispatchRegistryEntry[];
   }
+}
+
+/**
+ * Camunda Modeler keeps every previously-opened tab's bpmn-js instance
+ * mounted (hidden, not destroyed) so undo history/scroll position survive
+ * tab switches. That means registerBpmnJSPlugin's additional module runs
+ * once per tab, ever — not once per tab focus — so a naive
+ * `window.__mcpDispatch = ...` assignment gets permanently claimed by
+ * whichever tab happened to be opened last, regardless of which tab the
+ * user (or a diagramId param) actually intends to target. offsetParent is
+ * null exactly when an element (or an ancestor) is display:none, which is
+ * how Modeler hides inactive cached tabs — a cheap, reliable "is this tab
+ * the one currently on screen" check with no cross-component wiring needed.
+ */
+function isContainerVisible(el: HTMLElement | null): boolean {
+  return !!el && el.offsetParent !== null;
+}
+
+async function routeDispatch(tool: string, params: Record<string, unknown>): Promise<any> {
+  const registry = window.__mcpDispatchRegistry || [];
+  const visible = registry.filter((entry) => isContainerVisible(entry.container));
+
+  if (visible.length === 0) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: 'No visible/active BPMN diagram tab found in Modeler — open or focus a diagram tab.' }) }],
+      isError: true,
+    };
+  }
+  if (visible.length > 1) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: `${visible.length} BPMN tabs appear visible simultaneously — cannot determine which is active.` }) }],
+      isError: true,
+    };
+  }
+  return visible[0].dispatch(tool, params);
 }
 
 function McpCommandHandler(
@@ -40,24 +83,37 @@ function McpCommandHandler(
 
   const services: BpmnServices = { modeling, elementRegistry, canvas, moddle, bpmnFactory, injector, commandStack };
 
-  window.__mcpDispatch = async (tool: string, params: Record<string, unknown>) => {
-    console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
-    try {
-      const rawResult = await dispatchRendererTool(tool, params, services);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(rawResult) }],
-      };
-    } catch (err: any) {
-      const message = err.message || String(err);
-      console.error(`[camunda-mcp] Command ${tool} failed:`, message);
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-        isError: true,
-      };
-    }
+  const entry: DispatchRegistryEntry = {
+    container: canvas.getContainer(),
+    dispatch: async (tool: string, params: Record<string, unknown>) => {
+      console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
+      try {
+        const rawResult = await dispatchRendererTool(tool, params, services);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(rawResult) }],
+        };
+      } catch (err: any) {
+        const message = err.message || String(err);
+        console.error(`[camunda-mcp] Command ${tool} failed:`, message);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
   };
 
-  console.log('[camunda-mcp] window.__mcpDispatch registered');
+  window.__mcpDispatchRegistry = window.__mcpDispatchRegistry || [];
+  window.__mcpDispatchRegistry.push(entry);
+  window.__mcpDispatch = routeDispatch;
+
+  // Tab close destroys this instance's bpmn-js Diagram — deregister so the
+  // registry doesn't accumulate zombie entries for closed tabs.
+  eventBus.on('diagram.destroy', () => {
+    window.__mcpDispatchRegistry = (window.__mcpDispatchRegistry || []).filter((e) => e !== entry);
+  });
+
+  console.log('[camunda-mcp] Registered in dispatch registry, size:', window.__mcpDispatchRegistry.length);
 }
 
 (McpCommandHandler as any).$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas', 'moddle', 'bpmnFactory', 'injector', 'commandStack'];
@@ -1764,6 +1820,16 @@ function addGroup(
  * plugin at all, and would otherwise silently keep whichever version
  * Modeler's own "New Diagram" default assigned it.
  */
+// KNOWN LIMITATION: this mutates the bpmn:definitions moddle object directly
+// (executionPlatform/executionPlatformVersion), and the mutation demonstrably
+// lands on the exact object bpmnjs.getDefinitions() returns — confirmed via
+// live readback — yet Modeler's exported/saved XML still shows the old
+// version. The modeler: namespace attributes appear to be owned by Camunda
+// Modeler's own app-level layer (outside bpmn-js/moddle's normal
+// property-driven XML writer), similar to how tab-switching required
+// Modeler's triggerAction API rather than direct DOM/state manipulation.
+// No Modeler-level API for this has been found yet. See issue #3 for the
+// full investigation writeup.
 function setExecutionPlatformVersion(
   params: Record<string, unknown>,
   { canvas }: BpmnServices
@@ -1780,7 +1846,10 @@ function setExecutionPlatformVersion(
   definitions.executionPlatform = platform;
   definitions.executionPlatformVersion = version;
 
-  return { executionPlatform: platform, executionPlatformVersion: version };
+  return {
+    executionPlatform: platform,
+    executionPlatformVersion: version,
+  };
 }
 
 /* ------------------------------------------------------------------ */
