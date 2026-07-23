@@ -205,8 +205,8 @@ async function dispatchRendererTool(
       return exportImage(params, services);
     case 'set_execution_platform_version':
       return setExecutionPlatformVersion(params, services);
-    case '__debug_moddle':
-      return debugModdle(services);
+    case 'validate_diagram':
+      return validateDiagram(params, services);
     default:
       throw new Error(`Unknown renderer tool: "${tool}"`);
   }
@@ -289,21 +289,22 @@ function addTask(
 
   // ReceiveTask requires a Message Reference for Camunda validation; SendTask
   // may optionally carry one too (both have a messageRef attribute in BPMN).
+  let message: any;
   if (messageRef && (type === 'bpmn:ReceiveTask' || type === 'bpmn:SendTask')) {
     const bo = shape.businessObject;
     const definitions = getDefinitions(bo, canvas);
     if (definitions) {
-      const message = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', messageRef);
+      message = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', messageRef);
       modeling.updateProperties(shape, { messageRef: message });
     }
   }
 
-  // ReceiveTask requires a subscription correlationKey alongside messageRef
-  // for Camunda validation — Zeebe needs it to correlate the incoming
-  // message against a running process instance.
+  // ReceiveTask requires a subscription correlationKey on the Message itself
+  // (not the task) — Zeebe needs it to correlate the incoming message
+  // against a running process instance.
   const correlationKey = params.correlationKey as string | undefined;
-  if (correlationKey && type === 'bpmn:ReceiveTask') {
-    setZeebeSubscription(moddle, modeling, shape, correlationKey);
+  if (correlationKey && type === 'bpmn:ReceiveTask' && message) {
+    setMessageSubscription(moddle, message, correlationKey);
   }
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
@@ -666,14 +667,15 @@ function addEvent(
     eventDef.$parent = bo;
     modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
 
-    // Message Catch/Boundary events require a subscription correlationKey
-    // alongside messageRef — not applicable to Throw events (nothing caught).
+    // Message Catch/Boundary events require a subscription correlationKey on
+    // the Message itself (not the event) — not applicable to Throw events.
     if (
       eventDefType === 'bpmn:MessageEventDefinition' &&
       params.correlationKey &&
-      (type === 'bpmn:IntermediateCatchEvent' || type === 'bpmn:BoundaryEvent')
+      (type === 'bpmn:IntermediateCatchEvent' || type === 'bpmn:BoundaryEvent') &&
+      eventDefProps.messageRef
     ) {
-      setZeebeSubscription(moddle, modeling, shape, params.correlationKey as string);
+      setMessageSubscription(moddle, eventDefProps.messageRef, params.correlationKey as string);
     }
   }
 
@@ -735,26 +737,31 @@ function setZeebeTaskDefinition(
 
 /**
  * Attaches (or replaces) a zeebe:Subscription extension element with a
- * correlationKey on anything that *catches* a message (Receive Tasks,
- * Message Catch/Boundary Events). Required by Camunda validation alongside
- * messageRef — without it, Zeebe has no process-instance variable to
- * correlate the incoming message against. Not applicable to Send Tasks,
- * Message Throw Events, or Message Start Events (nothing to correlate yet).
+ * correlationKey on the bpmn:Message root element itself — NOT on the
+ * consuming Receive Task / Message Catch/Boundary Event. Confirmed via
+ * Camunda Modeler's own live linting service (injector.get('linting')):
+ * the reported node for this rule is the bpmn:Message, since the
+ * correlation key is a property of the message (reusable across every
+ * receiver), not of any one consuming element. The Message has no diagram
+ * shape, so this mutates its business object directly (same pattern as
+ * findOrCreateRootElement) rather than going through modeling.updateProperties.
  */
-function setZeebeSubscription(
+function setMessageSubscription(
   moddle: any,
-  modeling: any,
-  element: any,
+  messageBo: any,
   correlationKey: string,
 ): void {
-  const bo = element.businessObject;
-  let extElements = bo.extensionElements;
-  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  let extElements = messageBo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = messageBo;
+  }
   if (!extElements.values) extElements.values = [];
   extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:Subscription');
   const subscription = moddle.create('zeebe:Subscription', { correlationKey });
+  subscription.$parent = extElements;
   extElements.values.push(subscription);
-  modeling.updateProperties(element, { extensionElements: extElements });
+  messageBo.extensionElements = extElements;
 }
 
 /* ------------------------------------------------------------------ */
@@ -809,7 +816,10 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
   }
 
   if (params.correlationKey && hasZeebe) {
-    setZeebeSubscription(moddle, modeling, element, params.correlationKey as string);
+    const messageBo = element.businessObject.messageRef;
+    if (messageBo) {
+      setMessageSubscription(moddle, messageBo, params.correlationKey as string);
+    }
   }
 
   return { elementId, updated: true };
@@ -1028,14 +1038,40 @@ async function importXml(params: Record<string, unknown>, { injector }: BpmnServ
   return { imported: true };
 }
 
-/** Debug helper — lists available moddle packages and zeebe types */
-function debugModdle({ moddle }: BpmnServices) {
-  const packages = (moddle.packages || []).map((p: any) => ({
-    name: p.name,
-    prefix: p.prefix,
-    types: (p.types || []).map((t: any) => t.name),
-  }));
-  return { packages };
+/**
+ * Reads Camunda Modeler's own live linting service — the exact same data
+ * backing the Problems panel — instead of reimplementing Camunda's
+ * validation rules ourselves. `injector.get('linting')._reports` is an
+ * internal, undocumented field (confirmed by direct inspection, not public
+ * API), so this degrades gracefully if a future Modeler version renames or
+ * restructures it.
+ */
+function validateDiagram(params: Record<string, unknown>, { injector }: BpmnServices) {
+  const severityFilter = (params.severity as string) || 'all';
+
+  let lintingSvc: any;
+  try {
+    lintingSvc = injector.get('linting', false);
+  } catch {
+    lintingSvc = null;
+  }
+  if (!lintingSvc) {
+    return { issues: [], count: 0, warning: 'Linting service not available in this Modeler version — cannot report validation issues.' };
+  }
+
+  const reports: any[] = Array.isArray(lintingSvc._reports) ? lintingSvc._reports : [];
+  const issues = reports
+    .filter((r: any) => severityFilter === 'all' || r.category === severityFilter)
+    .map((r: any) => ({
+      elementId: r.id,
+      elementName: r.name,
+      message: r.message,
+      severity: r.category,
+      rule: r.rule,
+      docsUrl: r.meta?.documentation?.url,
+    }));
+
+  return { issues, count: issues.length };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1908,9 +1944,9 @@ async function buildProcess(
         const eventDef = bpmnFactory.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
-        // Boundary events always "catch" — require correlationKey alongside a message ref.
-        if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && el.properties?.correlationKey) {
-          setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
+        // Boundary events always "catch" — require correlationKey on the Message itself.
+        if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && el.properties?.correlationKey && refProps.messageRef) {
+          setMessageSubscription(moddle, refProps.messageRef, el.properties.correlationKey);
         }
       }
 
@@ -1927,9 +1963,10 @@ async function buildProcess(
         if (
           el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
           typeName === 'intermediateCatchEvent' &&
-          el.properties?.correlationKey
+          el.properties?.correlationKey &&
+          refProps.messageRef
         ) {
-          setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
+          setMessageSubscription(moddle, refProps.messageRef, el.properties.correlationKey);
         }
       }
 
@@ -1963,8 +2000,8 @@ async function buildProcess(
           props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', el.properties.messageRef);
         }
       }
-      if (el.properties.correlationKey && shape.type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe')) {
-        setZeebeSubscription(moddle, modeling, shape, el.properties.correlationKey);
+      if (el.properties.correlationKey && shape.type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe') && props.messageRef) {
+        setMessageSubscription(moddle, props.messageRef, el.properties.correlationKey);
       }
       if (el.properties.taskType && moddle.getPackage('zeebe')) {
         setZeebeTaskDefinition(moddle, modeling, shape, el.properties.taskType, el.properties.taskRetries);

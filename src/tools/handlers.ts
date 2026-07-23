@@ -16,6 +16,7 @@ import {
   cloneElementSchema, batchOperationsSchema, addGroupSchema,
   patchElementSchema, buildProcessSchema, validateLayoutSchema, exportImageSchema,
   listOpenDiagramsSchema, switchDiagramSchema, setExecutionPlatformVersionSchema,
+  validateDiagramSchema,
 } from './registry';
 
 const LOG_PREFIX = '[camunda-mcp]';
@@ -593,7 +594,7 @@ const FACADE: Record<string, { op: string; map: Record<string, string> }> = {
   },
   query_diagram: {
     op: 'operation',
-    map: { list: 'list_elements', get: 'get_element', bounds: 'get_element_bounds' },
+    map: { list: 'list_elements', get: 'get_element', bounds: 'get_element_bounds', validate: 'validate_diagram' },
   },
   manage_element: {
     op: 'operation',
@@ -740,7 +741,8 @@ export async function dispatch(
       case 'validate_layout':
       case 'auto_layout':
       case 'export_image':
-      case 'set_execution_platform_version': {
+      case 'set_execution_platform_version':
+      case 'validate_diagram': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -776,6 +778,7 @@ export async function dispatch(
         else if (toolName === 'auto_layout') autoLayoutSchema.parse(params);
         else if (toolName === 'export_image') exportImageSchema.parse(params);
         else if (toolName === 'set_execution_platform_version') setExecutionPlatformVersionSchema.parse(params);
+        else if (toolName === 'validate_diagram') validateDiagramSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it

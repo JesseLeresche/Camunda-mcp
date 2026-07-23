@@ -447,6 +447,7 @@ describe('resolveFacade', () => {
       ['update_element', 'properties', 'patch_element'],
       ['update_element', 'headers', 'set_task_headers'],
       ['query_diagram', 'bounds', 'get_element_bounds'],
+      ['query_diagram', 'validate', 'validate_diagram'],
       ['manage_element', 'clone', 'clone_element'],
       ['layout', 'auto', 'auto_layout'],
       ['manage_form', 'link_to_task', 'link_form_to_task'],

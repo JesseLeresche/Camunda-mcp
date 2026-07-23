@@ -606,13 +606,25 @@ export const updateElementSchema = z.object({
 });
 
 export const queryDiagramSchema = z.object({
-  operation: z.enum(['list', 'get', 'bounds'])
-    .describe('list = all elements; get = one element detail; bounds = exact rendered geometry of one element'),
+  operation: z.enum(['list', 'get', 'bounds', 'validate'])
+    .describe('list = all elements; get = one element detail; bounds = exact rendered geometry of one element; validate = live Camunda validation errors/warnings for the whole diagram (same data as Modeler\'s Problems panel).'),
   diagramId: z.string().describe('ID returned by manage_diagram create'),
   elementId: z.string().optional().describe('get/bounds: element ID'),
   typeFilter: z.string().optional().describe('list: filter by BPMN type prefix, e.g. "bpmn:Task"'),
   parentId: z.string().optional().describe('list: filter to elements inside this expanded subprocess'),
   fields: z.array(z.string()).optional().describe('list: fields to include per element (id always included)'),
+  severity: z.enum(['error', 'warn', 'all']).optional().describe('validate: minimum/exact severity to include (default "all")'),
+});
+
+/**
+ * Zod schema for the validate_diagram tool.
+ * Reads Camunda Modeler's own live linting service directly — the exact
+ * same data backing the Problems panel — instead of reimplementing
+ * Camunda's validation rules ourselves.
+ */
+export const validateDiagramSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  severity: z.enum(['error', 'warn', 'all']).default('all').describe('Minimum/exact severity to include.'),
 });
 
 export const manageElementSchema = z.object({
@@ -725,7 +737,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'query_diagram',
     description:
-      'Reads diagram state. operation: list (all elements, optional typeFilter/fields), get (full detail incl. properties, extensions, connections), bounds (exact rendered geometry, edge connection points, waypoints).',
+      'Reads diagram state. operation: list (all elements, optional typeFilter/fields), get (full detail incl. properties, extensions, connections), bounds (exact rendered geometry, edge connection points, waypoints), validate (live Camunda validation errors/warnings — the same data as Modeler\'s Problems panel; call this after build_process/batch_operations to confirm the diagram is actually valid instead of assuming so).',
     inputSchema: queryDiagramSchema,
     executeLocal: false,
   },
