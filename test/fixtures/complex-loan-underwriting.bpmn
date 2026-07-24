@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" id="Definitions_complex" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_complex" isExecutable="true">
+    <bpmn:startEvent id="start" name="Application Received">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:parallelGateway id="splitA" name="Fan Out">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="taskCredit" name="Check Credit">
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f7</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:subProcess id="subprocessDocs" name="Document Verification">
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f8</bpmn:outgoing>
+      <bpmn:startEvent id="subStart" name="Docs In">
+        <bpmn:outgoing>fp1</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:userTask id="reviewDocs" name="Review Docs">
+        <bpmn:incoming>fp1</bpmn:incoming>
+        <bpmn:outgoing>fp2</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="subEnd" name="Docs OK">
+        <bpmn:incoming>fp2</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="fp1" sourceRef="subStart" targetRef="reviewDocs" />
+      <bpmn:sequenceFlow id="fp2" sourceRef="reviewDocs" targetRef="subEnd" />
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="boundaryDocsTimeout" name="Docs Timeout" attachedToRef="subprocessDocs">
+      <bpmn:outgoing>f5</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="escalationDocs" name="Doc Timeout Escalated">
+      <bpmn:incoming>f5</bpmn:incoming>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_DocTimeout" />
+    </bpmn:endEvent>
+    <bpmn:businessRuleTask id="ruleTask" name="Evaluate Risk Rules">
+      <bpmn:incoming>f4</bpmn:incoming>
+      <bpmn:outgoing>f6</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:scriptTask id="scriptTask" name="Compute Score">
+      <bpmn:incoming>f6</bpmn:incoming>
+      <bpmn:outgoing>f9</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:parallelGateway id="joinA" name="Fan In">
+      <bpmn:incoming>f7</bpmn:incoming>
+      <bpmn:incoming>f8</bpmn:incoming>
+      <bpmn:incoming>f9</bpmn:incoming>
+      <bpmn:outgoing>f10</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:exclusiveGateway id="riskGateway" name="Risk Level?" default="f11">
+      <bpmn:incoming>f10</bpmn:incoming>
+      <bpmn:outgoing>f11</bpmn:outgoing>
+      <bpmn:outgoing>f12</bpmn:outgoing>
+      <bpmn:outgoing>f13</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:callActivity id="autoApprove" name="Auto Approve" calledElement="AutoApprovalProcess">
+      <bpmn:incoming>f11</bpmn:incoming>
+      <bpmn:outgoing>f15</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:userTask id="manualReview" name="Manual Review">
+      <bpmn:incoming>f12</bpmn:incoming>
+      <bpmn:outgoing>f16</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="boundaryManualTimeout" name="Review Timeout" attachedToRef="manualReview">
+      <bpmn:outgoing>f14</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT4H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="abandoned" name="Abandoned">
+      <bpmn:incoming>f14</bpmn:incoming>
+      <bpmn:terminateEventDefinition />
+    </bpmn:endEvent>
+    <bpmn:endEvent id="rejectHighRisk" name="Rejected">
+      <bpmn:incoming>f13</bpmn:incoming>
+      <bpmn:errorEventDefinition errorRef="Error_HighRisk" />
+    </bpmn:endEvent>
+    <bpmn:inclusiveGateway id="mergeGateway" name="Merge">
+      <bpmn:incoming>f15</bpmn:incoming>
+      <bpmn:incoming>f16</bpmn:incoming>
+      <bpmn:outgoing>f17</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:eventBasedGateway id="eventGateway" name="Await Response">
+      <bpmn:incoming>f17</bpmn:incoming>
+      <bpmn:outgoing>f18</bpmn:outgoing>
+      <bpmn:outgoing>f19</bpmn:outgoing>
+      <bpmn:outgoing>f20</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+    <bpmn:intermediateCatchEvent id="catchMessage" name="Customer Confirms">
+      <bpmn:incoming>f18</bpmn:incoming>
+      <bpmn:outgoing>f21</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_CustomerConfirm" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sendTask id="sendApproval" name="Send Approval">
+      <bpmn:incoming>f21</bpmn:incoming>
+      <bpmn:outgoing>f22</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="approvalSent" name="Approval Sent">
+      <bpmn:incoming>f22</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="catchTimer" name="24h Timeout">
+      <bpmn:incoming>f19</bpmn:incoming>
+      <bpmn:outgoing>f23</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateThrowEvent id="throwSignal" name="Notify Supervisor">
+      <bpmn:incoming>f23</bpmn:incoming>
+      <bpmn:outgoing>f24</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_Supervisor" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:manualTask id="supervisorFollowup" name="Supervisor Follow-up">
+      <bpmn:incoming>f24</bpmn:incoming>
+      <bpmn:outgoing>f25</bpmn:outgoing>
+    </bpmn:manualTask>
+    <bpmn:endEvent id="escalated" name="Escalated">
+      <bpmn:incoming>f25</bpmn:incoming>
+      <bpmn:signalEventDefinition signalRef="Signal_Escalation" />
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="catchCancel" name="Cancel Requested">
+      <bpmn:incoming>f20</bpmn:incoming>
+      <bpmn:outgoing>f26</bpmn:outgoing>
+      <bpmn:messageEventDefinition />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="cancelledEnd" name="Cancelled">
+      <bpmn:incoming>f26</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="splitA" />
+    <bpmn:sequenceFlow id="f2" sourceRef="splitA" targetRef="taskCredit" />
+    <bpmn:sequenceFlow id="f3" sourceRef="splitA" targetRef="subprocessDocs" />
+    <bpmn:sequenceFlow id="f4" sourceRef="splitA" targetRef="ruleTask" />
+    <bpmn:sequenceFlow id="f5" sourceRef="boundaryDocsTimeout" targetRef="escalationDocs" />
+    <bpmn:sequenceFlow id="f6" sourceRef="ruleTask" targetRef="scriptTask" />
+    <bpmn:sequenceFlow id="f7" sourceRef="taskCredit" targetRef="joinA" />
+    <bpmn:sequenceFlow id="f8" sourceRef="subprocessDocs" targetRef="joinA" />
+    <bpmn:sequenceFlow id="f9" sourceRef="scriptTask" targetRef="joinA" />
+    <bpmn:sequenceFlow id="f10" sourceRef="joinA" targetRef="riskGateway" />
+    <bpmn:sequenceFlow id="f11" name="Low" sourceRef="riskGateway" targetRef="autoApprove" />
+    <bpmn:sequenceFlow id="f12" name="Medium" sourceRef="riskGateway" targetRef="manualReview" />
+    <bpmn:sequenceFlow id="f13" name="High" sourceRef="riskGateway" targetRef="rejectHighRisk" />
+    <bpmn:sequenceFlow id="f14" sourceRef="boundaryManualTimeout" targetRef="abandoned" />
+    <bpmn:sequenceFlow id="f15" sourceRef="autoApprove" targetRef="mergeGateway" />
+    <bpmn:sequenceFlow id="f16" sourceRef="manualReview" targetRef="mergeGateway" />
+    <bpmn:sequenceFlow id="f17" sourceRef="mergeGateway" targetRef="eventGateway" />
+    <bpmn:sequenceFlow id="f18" sourceRef="eventGateway" targetRef="catchMessage" />
+    <bpmn:sequenceFlow id="f19" sourceRef="eventGateway" targetRef="catchTimer" />
+    <bpmn:sequenceFlow id="f20" sourceRef="eventGateway" targetRef="catchCancel" />
+    <bpmn:sequenceFlow id="f21" sourceRef="catchMessage" targetRef="sendApproval" />
+    <bpmn:sequenceFlow id="f22" sourceRef="sendApproval" targetRef="approvalSent" />
+    <bpmn:sequenceFlow id="f23" sourceRef="catchTimer" targetRef="throwSignal" />
+    <bpmn:sequenceFlow id="f24" sourceRef="throwSignal" targetRef="supervisorFollowup" />
+    <bpmn:sequenceFlow id="f25" sourceRef="supervisorFollowup" targetRef="escalated" />
+    <bpmn:sequenceFlow id="f26" sourceRef="catchCancel" targetRef="cancelledEnd" />
+  </bpmn:process>
+  <bpmn:escalation id="Escalation_DocTimeout" name="DocVerificationTimeout" escalationCode="DOC_TIMEOUT" />
+  <bpmn:error id="Error_HighRisk" name="HighRiskError" errorCode="HIGH_RISK" />
+  <bpmn:message id="Message_CustomerConfirm" name="CustomerConfirmationMsg" />
+  <bpmn:signal id="Signal_Supervisor" name="SupervisorNotification" />
+  <bpmn:signal id="Signal_Escalation" name="EscalationSignal" />
+  <bpmndi:BPMNDiagram>
+    <bpmndi:BPMNPlane bpmnElement="Process_complex">
+      <bpmndi:BPMNShape id="subprocessDocs_di" bpmnElement="subprocessDocs" isExpanded="true">
+        <dc:Bounds x="0" y="0" width="100" height="80" />
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -9,6 +9,7 @@
 
 // @ts-ignore — elkjs ships as a GWT-compiled UMD bundle; resolved via package main field
 import ELK from 'elkjs';
+import { layoutProcess } from 'bpmn-auto-layout';
 
 interface BpmnServices {
   modeling: any;
@@ -307,7 +308,7 @@ async function dispatchRendererTool(
     case 'validate_layout':
       return validateLayout(params, services);
     case 'auto_layout':
-      return smartAutoLayout(params, services);
+      return layoutDiagramViaAutoLayout(params, services);
     case 'export_image':
       return exportImage(params, services);
     case 'set_execution_platform_version':
@@ -1181,17 +1182,36 @@ async function validateDiagram(params: Record<string, unknown>, { injector }: Bp
     return { issues: [], count: 0, warning: 'Linting service not available in this Modeler version — cannot report validation issues.' };
   }
 
-  // _reports is a cache that only refreshes reactively off commandStack
-  // changes — a bulk import_xml doesn't reliably trigger it. Force a fresh
-  // lint pass before reading, so results reflect the diagram's actual
-  // current state rather than whatever was last computed.
+  // _reports is a cache that only refreshes reactively off a
+  // 'commandStack.changed' event — a bulk import_xml doesn't fire one (it
+  // bypasses the command stack entirely, unlike incremental modeling.*
+  // calls), so without a nudge _update() alone left stale reports (e.g. a
+  // false "missing start event") sitting indefinitely, until something else
+  // fired that event — clicking an element in the actual Modeler UI does it
+  // (proven live). We fire the event ourselves, but linting's own reaction to
+  // it isn't done by the time _update()'s first promise resolves — proven
+  // live that even 30ms gaps between retries weren't enough, so this backs
+  // off up to ~500ms total across a few retries before giving up and
+  // returning whatever _reports currently holds.
   try {
-    const maybePromise = lintingSvc._update?.();
-    if (maybePromise && typeof maybePromise.then === 'function') {
-      await maybePromise;
-    }
+    const eventBus = injector.get('eventBus', false);
+    eventBus?.fire('commandStack.changed');
   } catch {
-    // fall back to whatever _reports currently holds
+    // best-effort nudge — fall through to _update() regardless
+  }
+  const retryDelaysMs = [40, 80, 160, 220];
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    try {
+      const maybePromise = lintingSvc._update?.();
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        await maybePromise;
+      }
+    } catch {
+      // fall back to whatever _reports currently holds
+    }
+    if (attempt < retryDelaysMs.length) {
+      await new Promise<void>((r) => setTimeout(r, retryDelaysMs[attempt]));
+    }
   }
 
   const reports: any[] = Array.isArray(lintingSvc._reports) ? lintingSvc._reports : [];
@@ -2016,6 +2036,423 @@ const DEFAULT_SPACING_X = 180;
 const DEFAULT_START_X = 200;
 const DEFAULT_Y = 200;
 
+/* ------------------------------------------------------------------ */
+/*  build_process (bpmn-auto-layout pipeline)                         */
+/* ------------------------------------------------------------------ */
+//
+// Builds a bare semantic moddle tree (no positions), merges it into the
+// current diagram's existing content, runs bpmn-auto-layout, then imports
+// the fully-laid-out result. Used when build_process is called with
+// autoLayout:true and no pool/lane/textAnnotation/group elements (those
+// aren't supported by bpmn-auto-layout yet — tracked separately — so those
+// requests keep using the original incremental-createShape + ELK path).
+
+/** Moddle-only zeebe:TaskDefinition setter — no live shape/modeling.updateProperties needed. */
+function setZeebeTaskDefinitionOnBo(
+  moddle: any,
+  bo: any,
+  taskType: string,
+  taskRetries?: string,
+): void {
+  let extElements = bo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = bo;
+  }
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
+  const taskDef = moddle.create('zeebe:TaskDefinition', { type: taskType, retries: taskRetries || '3' });
+  taskDef.$parent = extElements;
+  extElements.values.push(taskDef);
+  bo.extensionElements = extElements;
+}
+
+/** Moddle-only zeebe:CalledElement setter — see setZeebeCalledElement's docs for why this (not the native calledElement attribute) is required. */
+function setZeebeCalledElementOnBo(
+  moddle: any,
+  bo: any,
+  processId: string,
+): void {
+  let extElements = bo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = bo;
+  }
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:CalledElement');
+  const calledElementDef = moddle.create('zeebe:CalledElement', { processId, propagateAllChildVariables: false });
+  calledElementDef.$parent = extElements;
+  extElements.values.push(calledElementDef);
+  bo.extensionElements = extElements;
+}
+
+/** True when build_process's element list contains a type bpmn-auto-layout can't lay out yet (Phase 3 territory). */
+function hasUnsupportedAutoLayoutElements(elements: any[]): boolean {
+  return elements.some((el) => el.type === 'textAnnotation' || el.type === 'group');
+}
+
+/**
+ * Builds one element's business object (no live shape) and appends it to
+ * its container's flowElements. Mirrors buildProcess's original per-type
+ * switch (modeling.createShape branch), but constructs bare moddle objects
+ * instead of live canvas shapes — bpmn-auto-layout computes all positions
+ * itself, so none of this needs x/y or a mounted shape to exist.
+ */
+function buildElementBo(
+  moddle: any,
+  bpmnFactory: any,
+  definitions: any,
+  process: any,
+  el: Record<string, unknown>,
+  boMap: Record<string, any>,
+): any {
+  const typeName = el.type as string;
+  const name = el.name as string | undefined;
+
+  // Resolve container: the parent subprocess's flowElements, or the process's.
+  let container = process;
+  if (el.parentId) {
+    const parentBo = boMap[el.parentId as string];
+    if (parentBo) container = parentBo;
+  }
+  if (!container.flowElements) container.flowElements = [];
+
+  let bo: any;
+
+  if (END_EVENT_DEFS[typeName]) {
+    bo = bpmnFactory.create('bpmn:EndEvent');
+    const defType = END_EVENT_DEFS[typeName];
+    const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, defType, (el.properties as any) || {});
+    const eventDef = moddle.create(defType, refProps);
+    eventDef.$parent = bo;
+    bo.eventDefinitions = [eventDef];
+
+  } else if (typeName === 'subprocess' || typeName === 'callActivity') {
+    bo = bpmnFactory.create(TYPE_MAP[typeName]);
+    if (el.calledElement && typeName === 'callActivity') {
+      setZeebeCalledElementOnBo(moddle, bo, el.calledElement as string);
+    }
+
+  } else if (typeName === 'boundaryEvent') {
+    const hostBo = el.attachedToId ? boMap[el.attachedToId as string] : undefined;
+    if (!hostBo) throw new Error(`BoundaryEvent "${el.id}" requires attachedToId`);
+    bo = bpmnFactory.create('bpmn:BoundaryEvent', {
+      attachedToRef: hostBo,
+      cancelActivity: el.cancelActivity !== false,
+    });
+    // A boundary event belongs to the same container as its host, not
+    // whatever parentId (if any) was given.
+    container = hostBo.$parent || process;
+    if (!container.flowElements) container.flowElements = [];
+    if (el.eventDefinitionType) {
+      const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, el.eventDefinitionType as string, (el.properties as any) || {});
+      const eventDef = moddle.create(el.eventDefinitionType as string, refProps);
+      eventDef.$parent = bo;
+      bo.eventDefinitions = [eventDef];
+      const props = el.properties as any;
+      if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && props?.correlationKey && refProps.messageRef) {
+        setMessageSubscription(moddle, refProps.messageRef, props.correlationKey);
+      }
+    }
+
+  } else if (typeName === 'startEvent' || typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
+    bo = bpmnFactory.create(TYPE_MAP[typeName]);
+    if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
+      const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, el.eventDefinitionType as string, (el.properties as any) || {});
+      const eventDef = moddle.create(el.eventDefinitionType as string, refProps);
+      eventDef.$parent = bo;
+      bo.eventDefinitions = [eventDef];
+      const props = el.properties as any;
+      if (
+        el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
+        typeName === 'intermediateCatchEvent' &&
+        props?.correlationKey &&
+        refProps.messageRef
+      ) {
+        setMessageSubscription(moddle, refProps.messageRef, props.correlationKey);
+      }
+    }
+
+  } else {
+    const bpmnType = TYPE_MAP[typeName];
+    if (!bpmnType) throw new Error(`Unknown element type "${typeName}"`);
+    bo = bpmnFactory.create(bpmnType);
+  }
+
+  if (name) bo.name = name;
+
+  const properties = el.properties as any;
+  if (properties) {
+    if (properties.documentation) {
+      const doc = moddle.create('bpmn:Documentation', { text: properties.documentation });
+      doc.$parent = bo;
+      bo.documentation = [doc];
+    }
+    if (properties.conditionExpression) {
+      const expr = moddle.create('bpmn:FormalExpression', { body: properties.conditionExpression });
+      expr.$parent = bo;
+      bo.conditionExpression = expr;
+    }
+    if (properties.isExecutable !== undefined) bo.isExecutable = properties.isExecutable;
+    if (properties.messageRef && (bo.$type === 'bpmn:ReceiveTask' || bo.$type === 'bpmn:SendTask')) {
+      bo.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', properties.messageRef);
+    }
+    if (properties.correlationKey && bo.$type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe') && bo.messageRef) {
+      setMessageSubscription(moddle, bo.messageRef, properties.correlationKey);
+    }
+    if (properties.taskType && moddle.getPackage('zeebe')) {
+      setZeebeTaskDefinitionOnBo(moddle, bo, properties.taskType, properties.taskRetries);
+    }
+  }
+
+  bo.$parent = container;
+  container.flowElements.push(bo);
+  return bo;
+}
+
+/** Builds one sequence flow's business object, wiring source/target incoming/outgoing. */
+function buildFlowBo(
+  moddle: any,
+  bpmnFactory: any,
+  sourceBo: any,
+  targetBo: any,
+  flow: Record<string, unknown>,
+): any {
+  const container = sourceBo.$parent;
+  if (!container.flowElements) container.flowElements = [];
+
+  const flowBo = bpmnFactory.create('bpmn:SequenceFlow', { sourceRef: sourceBo, targetRef: targetBo });
+  flowBo.$parent = container;
+  container.flowElements.push(flowBo);
+
+  if (!sourceBo.outgoing) sourceBo.outgoing = [];
+  sourceBo.outgoing.push(flowBo);
+  if (!targetBo.incoming) targetBo.incoming = [];
+  targetBo.incoming.push(flowBo);
+
+  if (flow.name) flowBo.name = flow.name;
+  if (flow.conditionExpression) {
+    const expr = moddle.create('bpmn:FormalExpression', { body: flow.conditionExpression });
+    expr.$parent = flowBo;
+    flowBo.conditionExpression = expr;
+  }
+  if (flow.isDefault) sourceBo.default = flowBo;
+
+  return flowBo;
+}
+
+/**
+ * Seeds an `isExpanded="true"` DI stub for each given subprocess id — the
+ * only documented way to get bpmn-auto-layout to render a subprocess
+ * expanded instead of its default collapsed state. Always builds a fresh
+ * diagram/plane rather than reusing whatever the input XML already had —
+ * any diagram that's already been laid out once (built before, or reloaded
+ * from a saved file) has REAL DI for these same elements already, using
+ * Camunda's own `<id>_di` convention. Confirmed live that pushing our stub
+ * shape alongside an existing one produces a document with two
+ * `bpmndi:BPMNShape` elements sharing the identical `id`, which
+ * bpmn-auto-layout's internal re-parse can't handle (observed: it silently
+ * produced an almost-empty result, wiping a 29-element diagram down to just
+ * its bpmn:Process on import). Since bpmn-auto-layout recomputes every
+ * position from scratch regardless of what DI it's given (labels aside, it
+ * never preserves input bounds/waypoints), discarding existing DI costs
+ * nothing.
+ */
+function seedExpandedHints(
+  moddle: any,
+  definitions: any,
+  process: any,
+  expandedBos: any[],
+): void {
+  if (expandedBos.length === 0) return;
+
+  const plane = moddle.create('bpmndi:BPMNPlane', { bpmnElement: process, planeElement: [] });
+  const diagram = moddle.create('bpmndi:BPMNDiagram', { plane });
+  plane.$parent = diagram;
+  diagram.$parent = definitions;
+  definitions.diagrams = [diagram];
+
+  for (const bo of expandedBos) {
+    const bounds = moddle.create('dc:Bounds', { x: 0, y: 0, width: 100, height: 80 });
+    // bpmn-auto-layout's own re-parse of this XML only picks up the
+    // isExpanded hint via elementsById (see setExpandedPropertyToModdleElements
+    // in its source) — that map is keyed by the `id` attribute, so a stub
+    // shape without one is silently invisible to it despite being otherwise
+    // well-formed. Matches Camunda Modeler's own "<id>_di" DI-id convention.
+    const shape = moddle.create('bpmndi:BPMNShape', { id: `${bo.id}_di`, bpmnElement: bo, isExpanded: true, bounds });
+    bounds.$parent = shape;
+    shape.$parent = plane;
+    plane.planeElement.push(shape);
+  }
+}
+
+/**
+ * Builds elements/flows as a bare semantic tree, merges them into the
+ * current diagram's existing content, lays the combination out via
+ * bpmn-auto-layout, and imports the result — replacing the incremental
+ * modeling.createShape() + ELK path for auto-layout requests it can handle.
+ * Returns the logical-id -> real-bpmn-js-id map, same contract as before.
+ */
+async function buildProcessViaAutoLayout(
+  elements: any[],
+  flows: any[],
+  services: BpmnServices,
+): Promise<Record<string, string>> {
+  const { moddle, bpmnFactory, injector } = services;
+
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  // Start from the diagram's current semantic content, not a fresh empty
+  // one — build_process is additive (can be called against an
+  // already-populated diagram), so a wholesale replace would be destructive.
+  const { xml: currentXml } = await modeler.saveXML({ format: false });
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const process = definitions.rootElements?.find((el: any) => el.$type === 'bpmn:Process');
+  if (!process) throw new Error('No bpmn:Process found in the current diagram');
+  if (!process.flowElements) process.flowElements = [];
+
+  const boMap: Record<string, any> = {};
+  const idMap: Record<string, string> = {};
+  const expandedBos: any[] = [];
+
+  for (const el of elements) {
+    const bo = buildElementBo(moddle, bpmnFactory, definitions, process, el, boMap);
+    boMap[el.id as string] = bo;
+    idMap[el.id as string] = bo.id;
+    if (el.type === 'subprocess' && !(el.collapsed ?? false)) {
+      expandedBos.push(bo);
+    }
+  }
+
+  for (const flow of flows) {
+    const sourceBo = boMap[flow.from as string];
+    const targetBo = boMap[flow.to as string];
+    if (!sourceBo) throw new Error(`Flow source "${flow.from}" not found in idMap`);
+    if (!targetBo) throw new Error(`Flow target "${flow.to}" not found in idMap`);
+    buildFlowBo(moddle, bpmnFactory, sourceBo, targetBo, flow);
+  }
+
+  seedExpandedHints(moddle, definitions, process, expandedBos);
+
+  const { xml: mergedXml } = await moddle.toXML(definitions, { format: false });
+  const laidOutXml = await layoutProcess(mergedXml);
+  await modeler.importXML(laidOutXml);
+
+  // A single importXML() replacing the whole diagram settles its reactive
+  // listeners (including the linting service's report cache) more slowly
+  // than the many small incremental modeling.* commands the old pipeline
+  // used — confirmed live: validateDiagram()'s forced _update() can still
+  // return a stale "missing start event" false-positive several calls after
+  // import, well after the actual Modeler UI has already caught up. Give it
+  // a couple of frames before anything (validateDiagram, the caller) reads
+  // diagram state.
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+  return idMap;
+}
+
+/** All ids of currently-expanded subprocesses on the live canvas, using the same isExpanded check `validateLayout` uses. */
+function collectExpandedSubprocessIds(elementRegistry: any): Set<string> {
+  const ids = new Set<string>();
+  for (const el of elementRegistry.getAll()) {
+    if (el.type !== 'bpmn:SubProcess') continue;
+    const isExpanded = (el as any).isExpanded ?? (el as any).di?.isExpanded ?? false;
+    if (isExpanded) ids.add(el.id);
+  }
+  return ids;
+}
+
+/** Recursively finds a flowElement by id, descending into subprocesses. */
+function findFlowElementById(container: any, id: string): any {
+  if (!container?.flowElements) return undefined;
+  for (const fe of container.flowElements) {
+    if (fe.id === id) return fe;
+    if (fe.$type === 'bpmn:SubProcess') {
+      const found = findFlowElementById(fe, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Standalone `auto_layout` tool, migrated to bpmn-auto-layout. Re-lays out
+ * the whole current diagram (positions are replaced wholesale — matches the
+ * library's greenfield nature, same interpretation buildProcessViaAutoLayout
+ * uses for newly-built content).
+ *
+ * Falls back to the old ELK-based smartAutoLayout for content
+ * bpmn-auto-layout can't handle yet (pools/lanes/annotations/groups — Phase
+ * 3 territory, tracked separately) — same gate build_process's autoLayout
+ * path uses.
+ *
+ * `elementId` (subprocess-scoped layout) is also not yet supported by this
+ * pipeline — true subtree-only layout (extract just that subprocess's
+ * children, lay out in isolation, merge positions back without touching
+ * anything else) is real, separate work not yet built. Rather than silently
+ * ignoring the scope or silently falling back to ELK for just this case,
+ * honor the request by widening it to the whole diagram and say so via
+ * `warning` — a wider blast radius than requested, but never a silent one.
+ */
+async function layoutDiagramViaAutoLayout(
+  params: Record<string, unknown>,
+  services: BpmnServices,
+): Promise<any> {
+  const { moddle, injector, elementRegistry } = services;
+  const scopeId = params.elementId as string | undefined;
+
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  const { xml: currentXml } = await modeler.saveXML({ format: false });
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const process = definitions.rootElements?.find((el: any) => el.$type === 'bpmn:Process');
+  if (!process) throw new Error('No bpmn:Process found in the current diagram');
+
+  const hasCollaboration = definitions.rootElements?.some((el: any) => el.$type === 'bpmn:Collaboration');
+  const hasLanes = !!process.laneSets?.length;
+  const hasAnnotationsOrGroups = (process.flowElements || []).some(
+    (fe: any) => fe.$type === 'bpmn:TextAnnotation' || fe.$type === 'bpmn:Group',
+  );
+  if (hasCollaboration || hasLanes || hasAnnotationsOrGroups) {
+    return smartAutoLayout(params, services);
+  }
+
+  const expandedIds = collectExpandedSubprocessIds(elementRegistry);
+  const expandedBos: any[] = [];
+  for (const id of expandedIds) {
+    const bo = findFlowElementById(process, id);
+    if (bo) expandedBos.push(bo);
+  }
+  seedExpandedHints(moddle, definitions, process, expandedBos);
+
+  const { xml: mergedXml } = await moddle.toXML(definitions, { format: false });
+  const laidOutXml = await layoutProcess(mergedXml);
+  await modeler.importXML(laidOutXml);
+
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+  const { rootElement: laidOutDefs } = await moddle.fromXML(laidOutXml);
+  const planeElements: any[] = laidOutDefs.diagrams?.[0]?.plane?.planeElement || [];
+  const positioned = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape').length;
+  const routed = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge').length;
+
+  const result: Record<string, unknown> = { positioned, routed };
+  if (scopeId) {
+    result.warning = `Subprocess-scoped auto-layout ("elementId") isn't supported by the new layout engine yet — the whole diagram was laid out instead of just "${scopeId}".`;
+  }
+  return result;
+}
+
 async function buildProcess(
   params: Record<string, unknown>,
   services: BpmnServices
@@ -2027,6 +2464,27 @@ async function buildProcess(
 
   const root = canvas.getRootElement();
   if (!root) throw new Error('No diagram is currently open');
+
+  // bpmn-auto-layout pipeline: builds a semantic tree, merges it into the
+  // current diagram, and lays the combination out in one pass. Used whenever
+  // auto-layout is requested and every element is one it supports —
+  // pools/lanes/annotations/groups aren't yet (tracked separately), so those
+  // requests fall through to the original incremental-createShape + ELK path
+  // below unchanged.
+  if (autoLayoutFlag && !hasUnsupportedAutoLayoutElements(elements)) {
+    const idMap = await buildProcessViaAutoLayout(elements, flows, services);
+    const result: Record<string, unknown> = {
+      idMap,
+      elementCount: elements.length,
+      flowCount: flows.length,
+    };
+    try {
+      result.validation = await validateDiagram({}, services);
+    } catch (err: any) {
+      result.validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+    }
+    return result;
+  }
 
   const idMap: Record<string, string> = {};
   const flowIds: string[] = [];

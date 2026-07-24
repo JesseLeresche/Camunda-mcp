@@ -62,3 +62,10 @@ declare module 'elkjs' {
   }
   export default ELK;
 }
+
+// bpmn-auto-layout ships no type declarations of its own (no .d.ts, no
+// "types"/"typings" field in package.json) — declared here so real logic
+// against it gets proper typing instead of `any`.
+declare module 'bpmn-auto-layout' {
+  export function layoutProcess(xml: string): Promise<string>;
+}

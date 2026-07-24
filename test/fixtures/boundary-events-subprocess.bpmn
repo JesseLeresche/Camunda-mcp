@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" id="Definitions_boundary" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_boundary" isExecutable="true">
+    <bpmn:startEvent id="start">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="checkStock" name="Check Stock">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="stockTimeout" name="Stock Timeout" attachedToRef="checkStock">
+      <bpmn:outgoing>f3</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="timeoutEnd" name="Timeout">
+      <bpmn:incoming>f3</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:callActivity id="shipOrder" name="Ship Order" calledElement="ShippingProcess">
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:boundaryEvent id="shipError" name="Ship Error" attachedToRef="shipOrder">
+      <bpmn:outgoing>f5</bpmn:outgoing>
+      <bpmn:errorEventDefinition />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="errorEnd" name="Shipping Failed">
+      <bpmn:incoming>f5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="packSubprocess" name="Pack Order">
+      <bpmn:incoming>f4</bpmn:incoming>
+      <bpmn:outgoing>f6</bpmn:outgoing>
+      <bpmn:startEvent id="packStart">
+        <bpmn:outgoing>fp1</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:task id="packItems" name="Pack Items">
+        <bpmn:incoming>fp1</bpmn:incoming>
+        <bpmn:outgoing>fp2</bpmn:outgoing>
+      </bpmn:task>
+      <bpmn:endEvent id="packEnd">
+        <bpmn:incoming>fp2</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="fp1" sourceRef="packStart" targetRef="packItems" />
+      <bpmn:sequenceFlow id="fp2" sourceRef="packItems" targetRef="packEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="end" name="Shipped">
+      <bpmn:incoming>f6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="checkStock" />
+    <bpmn:sequenceFlow id="f2" sourceRef="checkStock" targetRef="shipOrder" />
+    <bpmn:sequenceFlow id="f3" sourceRef="stockTimeout" targetRef="timeoutEnd" />
+    <bpmn:sequenceFlow id="f4" sourceRef="shipOrder" targetRef="packSubprocess" />
+    <bpmn:sequenceFlow id="f5" sourceRef="shipError" targetRef="errorEnd" />
+    <bpmn:sequenceFlow id="f6" sourceRef="packSubprocess" targetRef="end" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram>
+    <bpmndi:BPMNPlane bpmnElement="Process_boundary">
+      <bpmndi:BPMNShape id="packSubprocess_di" bpmnElement="packSubprocess" isExpanded="true">
+        <dc:Bounds x="0" y="0" width="100" height="80" />
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
