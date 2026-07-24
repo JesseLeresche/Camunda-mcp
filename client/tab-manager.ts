@@ -48,6 +48,11 @@ declare global {
       openDiagram: (filePath: string) => Promise<{ id: string; name: string; filePath?: string }>;
       autoLayout: () => Promise<{ applied: boolean }>;
     };
+    // Kept in sync with app.activeTabChanged so routeDispatch (bpmn-tools.ts)
+    // can tell, from inside a per-tab bpmn-js module, whether a requested
+    // diagramId is actually the active tab — the two plugin surfaces mount
+    // independently and have no other shared reference to compare against.
+    __mcpActiveTabId?: string | null;
   }
 }
 
@@ -65,6 +70,7 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
       if (activeTab) {
         this._activeTabId = activeTab.id;
         this._tabs.set(activeTab.id, activeTab);
+        window.__mcpActiveTabId = activeTab.id;
       }
     });
 

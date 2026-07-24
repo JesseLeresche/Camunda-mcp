@@ -50,7 +50,55 @@ function isContainerVisible(el: HTMLElement | null): boolean {
   return !!el && el.offsetParent !== null;
 }
 
+/**
+ * Ensures the tab actually requested via diagramId is the one that ends up
+ * visible before dispatch runs. Visibility alone (below) has no idea which
+ * tab a caller *wants* — it only ever knows which one happens to be on
+ * screen right now, which silently drifts whenever the user (or Modeler
+ * itself) changes focus between an MCP client's calls. window.__mcpActiveTabId
+ * (tab-manager.ts) is the one place that knows the real, current tab id, so
+ * use it to detect a mismatch and switchTab() before falling through to the
+ * visibility-based lookup. switchTab() can't activate an unsaved tab by
+ * reference (no such Modeler action exists) — that case fails loudly here
+ * instead of silently dispatching to whatever's on screen.
+ */
+async function ensureActiveTab(requestedId: string | undefined): Promise<{ error: string } | null> {
+  if (!requestedId || requestedId === window.__mcpActiveTabId) return null;
+
+  const tabManager = window.__mcpTabManager;
+  if (!tabManager) {
+    return { error: `Cannot verify diagramId "${requestedId}" is active — tab manager not initialized.` };
+  }
+
+  try {
+    await tabManager.switchTab({ diagramId: requestedId });
+  } catch (err: any) {
+    return {
+      error: `diagramId "${requestedId}" is not the active tab and could not be activated automatically `
+        + `(${err.message || err}). This commonly happens for unsaved diagrams — Modeler has no action to `
+        + 'activate an already-open tab by reference unless it has a saved file path. Switch to it manually '
+        + 'in the Modeler UI, or save it first, then retry.',
+    };
+  }
+
+  // switchTab's triggerAction resolves before the DOM/activeTabChanged
+  // necessarily settles — poll briefly rather than assume it's immediate.
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && window.__mcpActiveTabId !== requestedId) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+}
+
 async function routeDispatch(tool: string, params: Record<string, unknown>): Promise<any> {
+  const switchError = await ensureActiveTab(params.diagramId as string | undefined);
+  if (switchError) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(switchError) }],
+      isError: true,
+    };
+  }
+
   const registry = window.__mcpDispatchRegistry || [];
   const visible = registry.filter((entry) => isContainerVisible(entry.container));
 
@@ -2250,6 +2298,16 @@ async function smartAutoLayout(
   const scope = scopeId ? elementRegistry.get(scopeId) : canvas.getRootElement();
   if (!scope) throw new Error(scopeId ? `Element "${scopeId}" not found` : 'No diagram open');
 
+  // ELK computes positions in its own local frame, starting near (0,0) —
+  // fine when scope is the canvas root (which has no meaningful position of
+  // its own), but wrong when scope is a subprocess sitting elsewhere on the
+  // canvas: applying ELK's local coordinates as absolute would drag the
+  // subprocess's children far outside its actual box, which then
+  // force-expands to contain them. Offset by the subprocess's own position
+  // so ELK's local layout lands inside it instead.
+  const offsetX = scopeId ? ((scope as any).x || 0) : 0;
+  const offsetY = scopeId ? ((scope as any).y || 0) : 0;
+
   const allElements: any[] = elementRegistry.getAll();
 
   // Collect shapes directly inside this scope (skip labels, boundary events, connections)
@@ -2362,10 +2420,11 @@ async function smartAutoLayout(
       const elW = s.width || 36;
       const elH = s.height || 36;
 
-      // ELK coordinates are relative to the graph root; bpmn-js moveElements
-      // takes a delta from the current center, so compute that delta.
-      const targetCx = pos.x + elW / 2;
-      const targetCy = pos.y + elH / 2;
+      // ELK coordinates are relative to the layout scope's local frame;
+      // bpmn-js moveElements takes a delta from the current center, so
+      // compute that delta against the scope-offset absolute position.
+      const targetCx = pos.x + offsetX + elW / 2;
+      const targetCy = pos.y + offsetY + elH / 2;
       const currentCx = s.x + elW / 2;
       const currentCy = s.y + elH / 2;
       const dx = targetCx - currentCx;
@@ -2383,8 +2442,9 @@ async function smartAutoLayout(
 
     // Apply ELK-computed edge waypoints
     for (const conn of connections) {
-      const waypoints = elkEdges.get(conn.id);
-      if (!waypoints || waypoints.length < 2) continue;
+      const rawWaypoints = elkEdges.get(conn.id);
+      if (!rawWaypoints || rawWaypoints.length < 2) continue;
+      const waypoints = rawWaypoints.map((wp) => ({ x: wp.x + offsetX, y: wp.y + offsetY }));
       try {
         if (typeof modeling.updateWaypoints === 'function') {
           modeling.updateWaypoints(conn, waypoints);
@@ -2431,16 +2491,27 @@ async function smartAutoLayout(
       const be = elementRegistry.get(conn.source.id);
       const target = elementRegistry.get(conn.target?.id);
       if (!be || !target || !target.width) continue;
+      const host = be.host || be.parent;
       const beCx = be.x + (be.width || 36) / 2;
       const beBottom = be.y + (be.height || 36);
       const targetW = target.width || 100;
       const targetH = target.height || 80;
       const targetCx = target.x + targetW / 2;
       const targetTop = target.y;
+      // The naive midpoint between the boundary event and its target can
+      // land inside the host's own box when the host is tall (a subprocess
+      // or call activity) — e.g. a 200px-tall host with the boundary on its
+      // bottom edge and the target above puts the midpoint dead center of
+      // the host, routing the flow line straight through it. Route below
+      // the host's bottom edge instead whenever that would happen.
+      const naiveMidY = beBottom + (targetTop - beBottom) / 2;
+      const hostTop = host?.height ? host.y : beBottom;
+      const hostBottom = host?.height ? host.y + host.height : beBottom;
+      const crossbarY = (naiveMidY > hostTop && naiveMidY < hostBottom) ? hostBottom + 20 : naiveMidY;
       const newWaypoints = [
         { x: beCx, y: beBottom },
-        { x: beCx, y: beBottom + (targetTop - beBottom) / 2 },
-        { x: targetCx, y: beBottom + (targetTop - beBottom) / 2 },
+        { x: beCx, y: crossbarY },
+        { x: targetCx, y: crossbarY },
         { x: targetCx, y: targetTop },
       ];
       try {
