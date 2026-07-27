@@ -7,8 +7,6 @@
  * `webContents.executeJavaScript()`.
  */
 
-// @ts-ignore — elkjs ships as a GWT-compiled UMD bundle; resolved via package main field
-import ELK from 'elkjs';
 import { layoutProcess } from 'bpmn-auto-layout';
 
 interface BpmnServices {
@@ -2043,9 +2041,12 @@ const DEFAULT_Y = 200;
 // Builds a bare semantic moddle tree (no positions), merges it into the
 // current diagram's existing content, runs bpmn-auto-layout, then imports
 // the fully-laid-out result. Used when build_process is called with
-// autoLayout:true and no pool/lane/textAnnotation/group elements (those
-// aren't supported by bpmn-auto-layout yet — tracked separately — so those
-// requests keep using the original incremental-createShape + ELK path).
+// autoLayout:true. textAnnotation/group elements are split out before this
+// runs (bpmn-auto-layout only understands flow nodes) and reapplied live
+// afterward — see the split in buildProcess itself. Pools/lanes aren't
+// creatable via this schema at all, so the only remaining fallback to the
+// original incremental-createShape path is an existing collaboration
+// (CollaborationUnsupportedError, thrown below).
 
 /** Moddle-only zeebe:TaskDefinition setter — no live shape/modeling.updateProperties needed. */
 function setZeebeTaskDefinitionOnBo(
@@ -2086,10 +2087,6 @@ function setZeebeCalledElementOnBo(
   bo.extensionElements = extElements;
 }
 
-/** True when build_process's element list contains a type bpmn-auto-layout can't lay out yet (Phase 3 territory). */
-function hasUnsupportedAutoLayoutElements(elements: any[]): boolean {
-  return elements.some((el) => el.type === 'textAnnotation' || el.type === 'group');
-}
 
 /**
  * Builds one element's business object (no live shape) and appends it to
@@ -3075,9 +3072,9 @@ class CollaborationUnsupportedError extends Error {}
 /**
  * Builds elements/flows as a bare semantic tree, merges them into the
  * current diagram's existing content, lays the combination out via
- * bpmn-auto-layout, and imports the result — replacing the incremental
- * modeling.createShape() + ELK path for auto-layout requests it can handle.
- * Returns the logical-id -> real-bpmn-js-id map, same contract as before.
+ * bpmn-auto-layout, and imports the result. Returns the logical-id ->
+ * real-bpmn-js-id map, same contract as the original incremental
+ * modeling.createShape()-based path this replaced for auto-layout requests.
  */
 async function buildProcessViaAutoLayout(
   elements: any[],
@@ -3183,17 +3180,15 @@ function findFlowElementById(container: any, id: string): any {
  * Collaborations/lanes/annotations/groups route through
  * `layoutViaComposition` (the Phase 3 composition layer) instead of the
  * direct `layoutProcess` call below, which only ever handles a single flat
- * process. Falls back to the old ELK-based `smartAutoLayout` only if that
- * composition itself throws — a bug in the new path shouldn't leave the
- * user with no way to lay out a collaboration diagram at all.
+ * process.
  *
- * `elementId` (subprocess-scoped layout) is also not yet supported by this
- * pipeline — true subtree-only layout (extract just that subprocess's
- * children, lay out in isolation, merge positions back without touching
- * anything else) is real, separate work not yet built. Rather than silently
- * ignoring the scope or silently falling back to ELK for just this case,
- * honor the request by widening it to the whole diagram and say so via
- * `warning` — a wider blast radius than requested, but never a silent one.
+ * `elementId` (subprocess-scoped layout) is not yet supported by either
+ * path — true subtree-only layout (extract just that subprocess's children,
+ * lay out in isolation, merge positions back without touching anything
+ * else) is real, separate work not yet built (tracked in #10). Rather than
+ * silently ignoring the scope, honor the request by widening it to the
+ * whole diagram and say so via `warning` — a wider blast radius than
+ * requested, but never a silent one.
  */
 /**
  * Live post-import correction pass: for any lane member whose actual Y
@@ -3203,11 +3198,10 @@ function findFlowElementById(container: any, id: string): any {
  * `composePoolsAndLanes` only draws the band boundary, it never moves
  * shapes into it), nudges the *whole out-of-band group within that lane*
  * (preserving their relative spacing, not collapsing them onto each other)
- * so its center lands in the band's center. Uses `modeling.moveElements`,
- * the same live API `smartAutoLayout` already uses to apply computed
- * positions — bpmn-js re-routes connected edges (including ones crossing
- * into a different lane) as part of that command, the same as a user
- * dragging a shape, so there's no need to hand-roll edge re-routing here.
+ * so its center lands in the band's center. Uses `modeling.moveElements` —
+ * bpmn-js re-routes connected edges (including ones crossing into a
+ * different lane) as part of that command, the same as a user dragging a
+ * shape, so there's no need to hand-roll edge re-routing here.
  */
 function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): void {
   const { elementRegistry, modeling } = services;
@@ -3302,11 +3296,9 @@ async function layoutDiagramViaAutoLayout(
     try {
       return await layoutViaComposition(currentXml, services, scopeId);
     } catch (err: any) {
-      // Best-effort fallback — a composition bug shouldn't leave the user
-      // with no way to auto-layout a collaboration diagram at all.
-      const fallback: any = await smartAutoLayout(params, services);
-      fallback.warning = `${fallback.warning ? fallback.warning + ' ' : ''}bpmn-auto-layout composition failed (${err.message}) — fell back to the legacy layout engine.`;
-      return fallback;
+      // No ELK fallback (removed entirely, see #9) — surface a clear error
+      // instead of silently degrading to a different, unmaintained engine.
+      throw new Error(`Pool/lane/annotation/group layout failed: ${err.message}`);
     }
   }
 
@@ -3367,18 +3359,36 @@ async function buildProcess(
   }
 
   // bpmn-auto-layout pipeline: builds a semantic tree, merges it into the
-  // current diagram, and lays the combination out in one pass. Used whenever
-  // auto-layout is requested and every new element is one it supports
-  // (pools/lanes aren't creatable via this schema at all; textAnnotation/
-  // group requests fall through to the original incremental-createShape +
-  // ELK path below unchanged). If the *existing* diagram already has a
-  // collaboration/lanes, buildProcessViaAutoLayout throws
-  // CollaborationUnsupportedError and this falls through to that same old
-  // path too, rather than risking the silent-corruption bug described on
-  // that error class.
-  if (autoLayoutFlag && !hasUnsupportedAutoLayoutElements(elements)) {
+  // current diagram, and lays the combination out in one pass. textAnnotation/
+  // group aren't flow nodes bpmn-auto-layout can position (it only
+  // understands tasks/events/gateways/sequenceFlows) — they're split out
+  // here and reapplied live afterward via the same addAnnotation/addGroup
+  // functions Phase 3's composition layer already uses, the same pattern
+  // (lay out what the engine understands, reapply what it doesn't via live
+  // modeling calls) rather than a second, ELK-only code path for this one
+  // case. If the *existing* diagram already has a collaboration/lanes,
+  // buildProcessViaAutoLayout throws CollaborationUnsupportedError and this
+  // falls through to the old incremental path, which has no such blind spot.
+  if (autoLayoutFlag) {
     try {
-      const idMap = await buildProcessViaAutoLayout(elements, flows, services);
+      const flowElements = elements.filter((el: any) => el.type !== 'textAnnotation' && el.type !== 'group');
+      const decorativeElements = elements.filter((el: any) => el.type === 'textAnnotation' || el.type === 'group');
+
+      const idMap = await buildProcessViaAutoLayout(flowElements, flows, services);
+
+      for (const el of decorativeElements) {
+        try {
+          const x = (el.x as number) ?? DEFAULT_START_X;
+          const y = (el.y as number) ?? DEFAULT_Y;
+          const created: any = el.type === 'textAnnotation'
+            ? addAnnotation({ text: el.name || '', x, y }, services)
+            : addGroup({ name: el.name, x, y, width: el.width || 300, height: el.height || 200 }, services);
+          if (created?.elementId) idMap[el.id as string] = created.elementId;
+        } catch {
+          // best-effort — a decorative element that fails to create shouldn't abort the whole build
+        }
+      }
+
       const result: Record<string, unknown> = {
         idMap,
         elementCount: elements.length,
@@ -3577,30 +3587,18 @@ async function buildProcess(
 
   }}); // end mcp.compound — all elements + flows are a single undo step
 
-  // Phase 3: Auto-layout if requested (separate undo step — async)
-  if (autoLayoutFlag) {
-    try {
-      await smartAutoLayout({ diagramId: '' }, services);
-    } catch {
-      // Auto-layout is best-effort — don't fail the whole build
-    }
-    // smartAutoLayout only lays out one scope at a time (children of the
-    // element passed as elementId, or the root process if omitted) — it
-    // never recurses into subprocesses, so any expanded subprocess built in
-    // this call would otherwise keep its children clustered at their
-    // original creation position instead of spread out inside the (now
-    // correctly sized and placed) subprocess box.
-    for (const el of elements) {
-      if (el.type !== 'subprocess' || (el.collapsed ?? false)) continue;
-      const realId = idMap[el.id as string];
-      if (!realId) continue;
-      try {
-        await smartAutoLayout({ diagramId: '', elementId: realId }, services);
-      } catch {
-        // Best-effort — leave that subprocess's children where they are
-      }
-    }
-  }
+  // No auto-layout step here (deliberately — ELK/smartAutoLayout was
+  // removed entirely, see #9). This incremental path is now only reached
+  // for one narrow case: build_process targeting an expanded subprocess
+  // (parentId) inside an *existing* collaboration, since that's the one
+  // scenario the new bpmn-auto-layout pipeline can't handle (it only ever
+  // sees the first bpmn:Process — see CollaborationUnsupportedError).
+  // Elements are still created correctly here, just without auto-arranging
+  // afterward — a real but bounded, honestly-documented limitation, same
+  // class as the standalone layout tool's elementId-scoping fallback.
+  // Tracked in #10 (a proper "extract subtree, lay out in isolation, merge
+  // back" primitive would fix this and that gap at once; deliberately not
+  // rushed in here under Phase 4 time pressure — see #10 for why).
 
   const result: Record<string, unknown> = {
     idMap,
@@ -3618,285 +3616,6 @@ async function buildProcess(
   }
 
   return result;
-}
-
-/* ------------------------------------------------------------------ */
-/*  auto_layout — ELK-based layout engine                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Options accepted by the smartAutoLayout tool.
- * ELK controls most of the layout; these are the user-tunable knobs.
- */
-interface LayoutOpts {
-  /** Minimum gap between nodes on different branches (pixels). Default 50. */
-  branchSpacing: number;
-  /** Minimum gap between nodes in the same layer (pixels). Default 80. */
-  horizontalSpacing: number;
-  /** Edge routing style passed to ELK. Default 'orthogonal'. */
-  flowRouting: 'orthogonal' | 'polyline' | 'direct';
-  /** Alignment of nodes at a merge gateway. ELK handles this automatically. */
-  mergeAlignment: 'center' | 'top-branch';
-  /** Where to pin boundary events on their host after ELK layout. */
-  boundaryEventPosition: 'bottom' | 'bottom-right';
-}
-
-const DEFAULT_LAYOUT_OPTS: LayoutOpts = {
-  branchSpacing: 80,
-  horizontalSpacing: 120,
-  flowRouting: 'orthogonal',
-  mergeAlignment: 'center',
-  boundaryEventPosition: 'bottom',
-};
-
-async function smartAutoLayout(
-  params: Record<string, unknown>,
-  services: BpmnServices
-) {
-  const { modeling, elementRegistry, canvas, commandStack } = services;
-  const scopeId = params.elementId as string | undefined;
-  const userOpts = (params.options as Partial<LayoutOpts>) || {};
-  const opts: LayoutOpts = { ...DEFAULT_LAYOUT_OPTS, ...userOpts };
-
-  // Wait for the renderer to settle so all element positions are current
-  await new Promise<void>(r => setTimeout(r, 50));
-
-  // Resolve layout scope: a specific subprocess or the root process
-  const scope = scopeId ? elementRegistry.get(scopeId) : canvas.getRootElement();
-  if (!scope) throw new Error(scopeId ? `Element "${scopeId}" not found` : 'No diagram open');
-
-  // ELK computes positions in its own local frame, starting near (0,0) —
-  // fine when scope is the canvas root (which has no meaningful position of
-  // its own), but wrong when scope is a subprocess sitting elsewhere on the
-  // canvas: applying ELK's local coordinates as absolute would drag the
-  // subprocess's children far outside its actual box, which then
-  // force-expands to contain them. Offset by the subprocess's own position
-  // so ELK's local layout lands inside it instead.
-  const offsetX = scopeId ? ((scope as any).x || 0) : 0;
-  const offsetY = scopeId ? ((scope as any).y || 0) : 0;
-
-  const allElements: any[] = elementRegistry.getAll();
-
-  // Collect shapes directly inside this scope (skip labels, boundary events, connections)
-  const shapes = allElements.filter((el: any) => {
-    if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
-    if (el.waypoints) return false;
-    if (el.type === 'bpmn:BoundaryEvent') return false; // repositioned separately after layout
-    return el.parent === scope;
-  });
-
-  // Collect connections whose source AND target are inside this scope
-  const connections = allElements.filter((el: any) => {
-    if (!el.waypoints) return false;
-    return el.source?.parent === scope && el.target?.parent === scope;
-  });
-
-  if (shapes.length === 0) return { positioned: 0, routed: 0 };
-
-  // Boundary events are excluded from ELK's graph (see below), so a
-  // boundary event's outgoing flow is never a real ELK edge — which leaves
-  // its target with no edge connecting it to the graph at all. ELK then
-  // treats that target as a disconnected node and places it arbitrarily,
-  // forcing the manual L-route (applied post-layout, below) to stretch
-  // across whatever arbitrary distance ELK picked. Give ELK a synthetic
-  // host->target edge (never applied to the diagram, layout hint only) so
-  // it places these targets adjacent to the task they're actually next to.
-  const shapeIds = new Set(shapes.map((s: any) => s.id));
-  const syntheticEdges: Array<{ id: string; sources: string[]; targets: string[] }> = [];
-  for (const el of allElements) {
-    if (!el.waypoints || el.source?.type !== 'bpmn:BoundaryEvent') continue;
-    if (el.target?.parent !== scope) continue;
-    const host = el.source.host || el.source.parent;
-    if (!host || !shapeIds.has(host.id) || !shapeIds.has(el.target.id)) continue;
-    syntheticEdges.push({ id: `synthetic-${el.id}`, sources: [host.id], targets: [el.target.id] });
-  }
-
-  // ── Build ELK graph ──────────────────────────────────────────────
-
-  const elkEdgeRouting =
-    opts.flowRouting === 'orthogonal' ? 'ORTHOGONAL'
-    : opts.flowRouting === 'polyline' ? 'POLYLINE'
-    : 'SPLINES';
-
-  const elk = new ELK();
-
-  const elkGraph = {
-    id: 'root',
-    layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': 'RIGHT',
-      'elk.edgeRouting': elkEdgeRouting,
-      'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.horizontalSpacing),
-      'elk.spacing.nodeNode': String(opts.branchSpacing),
-      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-      'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
-      'elk.padding': '[top=40,left=40,bottom=40,right=40]',
-    },
-    children: shapes.map((s: any) => ({
-      id: s.id,
-      width: s.width || 100,
-      height: s.height || 80,
-    })),
-    edges: connections.map((c: any) => ({
-      id: c.id,
-      sources: [c.source.id],
-      targets: [c.target.id],
-    })).concat(syntheticEdges),
-  };
-
-  // Run ELK layout — this is async but runs synchronously in the bundled build
-  let layoutResult: any;
-  try {
-    layoutResult = await elk.layout(elkGraph);
-  } catch (err: any) {
-    throw new Error(`ELK layout failed: ${err.message || err}`);
-  }
-
-  // Build a map of id → ELK-assigned position (ELK returns top-left x/y)
-  const elkPositions = new Map<string, { x: number; y: number }>();
-  for (const node of (layoutResult.children || [])) {
-    elkPositions.set(node.id, { x: node.x, y: node.y });
-  }
-
-  // ELK edge routing: map from connection id → array of bend-points
-  const elkEdges = new Map<string, Array<{ x: number; y: number }>>();
-  for (const edge of (layoutResult.edges || [])) {
-    const sections = edge.sections || [];
-    if (sections.length === 0) continue;
-    const section = sections[0];
-    const waypoints: Array<{ x: number; y: number }> = [];
-    if (section.startPoint) waypoints.push(section.startPoint);
-    for (const bp of (section.bendPoints || [])) waypoints.push(bp);
-    if (section.endPoint) waypoints.push(section.endPoint);
-    if (waypoints.length >= 2) elkEdges.set(edge.id, waypoints);
-  }
-
-  // ── Apply positions and waypoints ───────────────────────────────
-
-  let positioned = 0;
-  let routed = 0;
-
-  commandStack.execute('mcp.compound', { fn: () => {
-
-    // Move each shape to ELK's computed position
-    for (const s of shapes) {
-      const pos = elkPositions.get(s.id);
-      if (!pos) continue;
-
-      const elW = s.width || 36;
-      const elH = s.height || 36;
-
-      // ELK coordinates are relative to the layout scope's local frame;
-      // bpmn-js moveElements takes a delta from the current center, so
-      // compute that delta against the scope-offset absolute position.
-      const targetCx = pos.x + offsetX + elW / 2;
-      const targetCy = pos.y + offsetY + elH / 2;
-      const currentCx = s.x + elW / 2;
-      const currentCy = s.y + elH / 2;
-      const dx = targetCx - currentCx;
-      const dy = targetCy - currentCy;
-
-      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-        try {
-          modeling.moveElements([s], { x: dx, y: dy });
-          positioned++;
-        } catch {
-          // Skip elements that can't be moved
-        }
-      }
-    }
-
-    // Apply ELK-computed edge waypoints
-    for (const conn of connections) {
-      const rawWaypoints = elkEdges.get(conn.id);
-      if (!rawWaypoints || rawWaypoints.length < 2) continue;
-      const waypoints = rawWaypoints.map((wp) => ({ x: wp.x + offsetX, y: wp.y + offsetY }));
-      try {
-        if (typeof modeling.updateWaypoints === 'function') {
-          modeling.updateWaypoints(conn, waypoints);
-        } else {
-          modeling.layoutConnection(conn, {
-            connectionStart: waypoints[0],
-            connectionEnd: waypoints[waypoints.length - 1],
-          });
-        }
-        routed++;
-      } catch {
-        // Skip connections that fail to route
-      }
-    }
-
-    // ── Reposition boundary events on their host's perimeter ────────
-    // ELK doesn't know about boundary events; pin them back after layout.
-    const boundaryEvents = allElements.filter((el: any) =>
-      el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
-    );
-    for (const be of boundaryEvents) {
-      const host = be.host || be.parent;
-      if (!host || !host.width) continue;
-      const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
-      const beCx = be.x + (be.width || 36) / 2;
-      const beCy = be.y + (be.height || 36) / 2;
-      const dx = pos.x - beCx;
-      const dy = pos.y - beCy;
-      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-        try {
-          modeling.moveElements([be], { x: dx, y: dy });
-          positioned++;
-        } catch { /* skip */ }
-      }
-    }
-
-    // ── Route boundary event outgoing flows ─────────────────────────
-    // These connections were excluded from the ELK graph (boundary events
-    // are excluded from ELK), so route them with a simple L-shape.
-    const beFlows = allElements.filter((el: any) =>
-      el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
-    );
-    for (const conn of beFlows) {
-      const be = elementRegistry.get(conn.source.id);
-      const target = elementRegistry.get(conn.target?.id);
-      if (!be || !target || !target.width) continue;
-      const host = be.host || be.parent;
-      const beCx = be.x + (be.width || 36) / 2;
-      const beBottom = be.y + (be.height || 36);
-      const targetW = target.width || 100;
-      const targetH = target.height || 80;
-      const targetCx = target.x + targetW / 2;
-      const targetTop = target.y;
-      // The naive midpoint between the boundary event and its target can
-      // land inside the host's own box when the host is tall (a subprocess
-      // or call activity) — e.g. a 200px-tall host with the boundary on its
-      // bottom edge and the target above puts the midpoint dead center of
-      // the host, routing the flow line straight through it. Route below
-      // the host's bottom edge instead whenever that would happen.
-      const naiveMidY = beBottom + (targetTop - beBottom) / 2;
-      const hostTop = host?.height ? host.y : beBottom;
-      const hostBottom = host?.height ? host.y + host.height : beBottom;
-      const crossbarY = (naiveMidY > hostTop && naiveMidY < hostBottom) ? hostBottom + 20 : naiveMidY;
-      const newWaypoints = [
-        { x: beCx, y: beBottom },
-        { x: beCx, y: crossbarY },
-        { x: targetCx, y: crossbarY },
-        { x: targetCx, y: targetTop },
-      ];
-      try {
-        if (typeof modeling.updateWaypoints === 'function') {
-          modeling.updateWaypoints(conn, newWaypoints);
-        } else {
-          modeling.layoutConnection(conn, {
-            connectionStart: newWaypoints[0],
-            connectionEnd: newWaypoints[newWaypoints.length - 1],
-          });
-        }
-        routed++;
-      } catch { /* skip */ }
-    }
-
-  }}); // end mcp.compound
-
-  return { positioned, routed, elementCount: shapes.length };
 }
 
 /* ------------------------------------------------------------------ */
