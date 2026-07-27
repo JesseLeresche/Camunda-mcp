@@ -1455,6 +1455,9 @@ function addEndEventTyped(
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
     modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+    if (eventDefType === 'bpmn:MessageEventDefinition' && params.correlationKey && eventDefProps.messageRef) {
+      setMessageSubscription(moddle, eventDefProps.messageRef, params.correlationKey as string);
+    }
   }
 
   if (name) modeling.updateLabel(shape, name);

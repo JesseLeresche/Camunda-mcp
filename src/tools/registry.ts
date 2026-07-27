@@ -293,6 +293,7 @@ export const addEndEventTypedSchema = z.object({
   errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
   errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
   messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for eventDefinitionType bpmn:MessageEventDefinition — required by Camunda validation alongside messageRef.'),
   signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
   escalationRef: z.string().optional().describe('For eventDefinitionType bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
   escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
