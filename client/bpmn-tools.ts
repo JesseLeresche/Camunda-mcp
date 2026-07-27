@@ -2123,6 +2123,10 @@ function buildElementBo(
     const eventDef = moddle.create(defType, refProps);
     eventDef.$parent = bo;
     bo.eventDefinitions = [eventDef];
+    const endProps = el.properties as any;
+    if (defType === 'bpmn:MessageEventDefinition' && endProps?.correlationKey && refProps.messageRef) {
+      setMessageSubscription(moddle, refProps.messageRef, endProps.correlationKey);
+    }
 
   } else if (typeName === 'subprocess' || typeName === 'callActivity') {
     bo = bpmnFactory.create(TYPE_MAP[typeName]);
@@ -3441,6 +3445,10 @@ async function buildProcess(
       eventDef.$parent = bo;
       bo.eventDefinitions = [eventDef];
       modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+      const endProps = el.properties as any;
+      if (defType === 'bpmn:MessageEventDefinition' && endProps?.correlationKey && refProps.messageRef) {
+        setMessageSubscription(moddle, refProps.messageRef, endProps.correlationKey);
+      }
 
     // Handle subprocesses
     } else if (typeName === 'subprocess' || typeName === 'callActivity') {
