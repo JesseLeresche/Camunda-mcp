@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" id="Definitions_pools" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_customer" name="Customer" processRef="Process_customer" />
+    <bpmn:participant id="Participant_bank" name="Bank" processRef="Process_bank" />
+    <bpmn:messageFlow id="mf1" name="Order Details" sourceRef="submitOrder" targetRef="requestReceived" />
+    <bpmn:textAnnotation id="annotation1">
+      <bpmn:text>Manual review required for orders over $10k</bpmn:text>
+    </bpmn:textAnnotation>
+    <bpmn:association id="assoc1" sourceRef="annotation1" targetRef="reviewRequest" />
+    <bpmn:group id="group1" categoryValueRef="CategoryValue_1" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_customer" isExecutable="true">
+    <bpmn:startEvent id="orderPlaced" name="Order Placed">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="submitOrder" name="Submit Order">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="customerDone" name="Done">
+      <bpmn:incoming>f2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="orderPlaced" targetRef="submitOrder" />
+    <bpmn:sequenceFlow id="f2" sourceRef="submitOrder" targetRef="customerDone" />
+  </bpmn:process>
+  <bpmn:process id="Process_bank" isExecutable="true">
+    <bpmn:laneSet id="LaneSet_bank">
+      <bpmn:lane id="lane_frontOffice" name="Front Office">
+        <bpmn:flowNodeRef>requestReceived</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>reviewRequest</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>approveGateway</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>rejected</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="lane_backOffice" name="Back Office">
+        <bpmn:flowNodeRef>processPayment</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>paymentComplete</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="requestReceived" name="Request Received">
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="reviewRequest" name="Review Request">
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="approveGateway" name="Approved?" default="f5">
+      <bpmn:incoming>f4</bpmn:incoming>
+      <bpmn:outgoing>f5</bpmn:outgoing>
+      <bpmn:outgoing>f6</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="processPayment" name="Process Payment">
+      <bpmn:incoming>f5</bpmn:incoming>
+      <bpmn:outgoing>f7</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="paymentComplete" name="Payment Complete">
+      <bpmn:incoming>f7</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="rejected" name="Rejected">
+      <bpmn:incoming>f6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f3" sourceRef="requestReceived" targetRef="reviewRequest" />
+    <bpmn:sequenceFlow id="f4" sourceRef="reviewRequest" targetRef="approveGateway" />
+    <bpmn:sequenceFlow id="f5" name="Yes" sourceRef="approveGateway" targetRef="processPayment" />
+    <bpmn:sequenceFlow id="f6" name="No" sourceRef="approveGateway" targetRef="rejected" />
+    <bpmn:sequenceFlow id="f7" sourceRef="processPayment" targetRef="paymentComplete" />
+  </bpmn:process>
+  <bpmn:category id="Category_1">
+    <bpmn:categoryValue id="CategoryValue_1" value="Payment Processing" />
+  </bpmn:category>
+  <bpmndi:BPMNDiagram>
+    <bpmndi:BPMNPlane bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="annotation1_di" bpmnElement="annotation1">
+        <dc:Bounds x="50" y="50" width="160" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="group1_di" bpmnElement="group1">
+        <dc:Bounds x="400" y="300" width="320" height="220" />
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
