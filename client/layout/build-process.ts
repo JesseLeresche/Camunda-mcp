@@ -1,7 +1,7 @@
 import { layoutProcess } from 'bpmn-auto-layout';
 
 import {
-  type Rect, type BpmnServices,
+  type BpmnServices,
   TYPE_MAP, END_EVENT_DEFS,
   eventDefRefProps, getDefinitions, getBoundaryPosition,
   setMessageSubscription, setZeebeCalledElement, setZeebeTaskDefinition, findOrCreateRootElement,
@@ -11,7 +11,8 @@ import { buildElementBo, buildFlowBo, seedExpandedHints } from './bo-builders';
 import { applyPostProcessing } from './post-process';
 import { layoutSubtree } from './subtree';
 import { enforcePoolBoundary } from './pool-boundary';
-import { addAnnotation, addGroup, validateDiagram } from '../bpmn-tools';
+import { addAnnotation, addGroup } from '../elements/create';
+import { validateDiagram } from '../diagram-io';
 
 /**
  * Thrown by `buildProcessViaAutoLayout` when the *existing* diagram already

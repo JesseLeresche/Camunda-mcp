@@ -1,6 +1,7 @@
 import type { BpmnServices, Rect } from './element-shared';
 import { rectsOverlap, segmentIntersectsRect } from './element-shared';
-import { dispatchRendererTool, moveElement, setFlowWaypoints, resizeElement } from './bpmn-tools';
+import { dispatchRendererTool } from './bpmn-tools';
+import { moveElement, setFlowWaypoints, resizeElement } from './elements/mutate';
 
 /* ------------------------------------------------------------------ */
 /*  validate_layout — layout advisory and auto-fix                    */

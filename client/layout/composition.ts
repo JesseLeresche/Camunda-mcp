@@ -4,7 +4,7 @@ import { type Rect, type BpmnServices, bboxOfShapes, POOL_PADDING } from '../ele
 import { seedExpandedHints } from './bo-builders';
 import { applyPostProcessing } from './post-process';
 import { collectExpandedSubprocessIds, findFlowElementById } from './subtree';
-import { addMessageFlow, addAnnotation, addGroup } from '../bpmn-tools';
+import { addMessageFlow, addAnnotation, addGroup } from '../elements/create';
 
 export interface ParticipantCore {
   participantId: string | null; // null when there's no bpmn:Collaboration wrapper
