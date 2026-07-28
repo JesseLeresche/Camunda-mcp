@@ -4,7 +4,7 @@ import { join } from 'path';
 import { layoutProcess } from 'bpmn-auto-layout';
 // @ts-ignore — bpmn-moddle ships no types; same pattern as the smoke test.
 import { BpmnModdle } from 'bpmn-moddle';
-import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelText, postProcessLayout } from '../bpmn-tools';
+import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelText, postProcessLayout } from '../layout/post-process';
 
 /**
  * Phase 2 regression suite — the post-processing pass that runs on
