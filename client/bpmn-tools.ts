@@ -3278,10 +3278,10 @@ async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{
   // primitive's whole contract (#10) is that content outside scope is never
   // touched, and that has to hold regardless of what saveXML does as a
   // side effect underneath it.
-  const preSaveXmlPositions = new Map<string, { x: number; y: number }>(
+  const preSaveXmlPositions = new Map<string, { x: number; y: number; width: number; height: number }>(
     elementRegistry.getAll()
       .filter((el: any) => el.x !== undefined && el.type !== 'label')
-      .map((el: any) => [el.id, { x: el.x, y: el.y }]),
+      .map((el: any) => [el.id, { x: el.x, y: el.y, width: el.width, height: el.height }]),
   );
 
   const { xml: currentXml } = await modeler.saveXML({ format: false });
@@ -3336,19 +3336,37 @@ async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{
   }
 
   // Undo saveXML's normalization (and anything else unintended) for every
-  // element that isn't part of scopeId's own subtree — restores each back
-  // to its exact recorded position from before saveXML ran.
+  // element that isn't part of scopeId's own subtree or its ancestor chain
+  // — ancestors (e.g. a pool containing scopeId) legitimately may need to
+  // have grown to keep containing it, same as buildProcess's analogous
+  // restore pass (#13). Restores via resizeShape (full bounds), not just a
+  // position move — confirmed live that an ancestor's *size*, not just
+  // position, can also get perturbed as a side effect of the work above, so
+  // a position-only restore can leave position and size inconsistent.
   const scopedIds = new Set(shapes.map((s: any) => s.bpmnElement.id));
   scopedIds.add(scopeId);
+  let ancestor: any = scopeShape?.parent;
+  while (ancestor) {
+    scopedIds.add(ancestor.id);
+    ancestor = ancestor.parent;
+  }
   for (const [id, original] of preSaveXmlPositions) {
     if (scopedIds.has(id)) continue;
     const liveShape = elementRegistry.get(id);
     if (!liveShape) continue;
-    const restoreDx = original.x - liveShape.x;
-    const restoreDy = original.y - liveShape.y;
-    if (restoreDx === 0 && restoreDy === 0) continue;
+    const sizeChanged = liveShape.width !== original.width || liveShape.height !== original.height;
+    const positionChanged = liveShape.x !== original.x || liveShape.y !== original.y;
+    if (!sizeChanged && !positionChanged) continue;
     try {
-      modeling.moveElements([liveShape], { x: restoreDx, y: restoreDy });
+      if (sizeChanged) {
+        // resizeShape only — some element types (events) reject resize
+        // commands with a fixed, non-resizable size in bpmn-js's rule
+        // layer, so only take this path when a real size change needs
+        // undoing.
+        modeling.resizeShape(liveShape, { x: original.x, y: original.y, width: original.width, height: original.height });
+      } else {
+        modeling.moveElements([liveShape], { x: original.x - liveShape.x, y: original.y - liveShape.y });
+      }
     } catch {
       // best-effort — leave shapes that can't be restored where they are
     }
@@ -3551,6 +3569,23 @@ async function buildProcess(
   // case. If the *existing* diagram already has a collaboration/lanes,
   // buildProcessViaAutoLayout throws CollaborationUnsupportedError and this
   // falls through to the old incremental path, which has no such blind spot.
+  //
+  // Snapshot every existing element's bounds *before* attempting
+  // buildProcessViaAutoLayout at all — confirmed live (#13) that its own
+  // modeler.saveXML() call (needed to read the current diagram) has the
+  // same real side effect on live positions found in #10's layoutSubtree:
+  // it can shift the whole canvas once, and that shift had already
+  // happened by the time the incremental path's own restore snapshot used
+  // to be taken (right before this fix), making that snapshot itself
+  // already-corrupted and the restore below a no-op. Captured unconditionally
+  // here so the incremental path's restore has the true original state
+  // regardless of whether buildProcessViaAutoLayout was attempted first.
+  const preCreatePositions = new Map<string, { x: number; y: number; width: number; height: number }>(
+    elementRegistry.getAll()
+      .filter((el: any) => el.x !== undefined && el.type !== 'label')
+      .map((el: any) => [el.id, { x: el.x, y: el.y, width: el.width, height: el.height }]),
+  );
+
   if (autoLayoutFlag) {
     try {
       const flowElements = elements.filter((el: any) => el.type !== 'textAnnotation' && el.type !== 'group');
@@ -3602,13 +3637,31 @@ async function buildProcess(
     const x = (el.x as number) ?? nextX;
     const y = (el.y as number) ?? DEFAULT_Y;
 
-    // Resolve parent (logical ID → real ID)
+    // Resolve parent: a logical ID created earlier in this same call, or a
+    // real element id already on canvas (mirrors resolveParent's
+    // validation, used by add_element). Previously this only ever checked
+    // idMap and silently fell back to root when a parentId didn't resolve
+    // — confirmed live (#10) that targeting a pre-existing subprocess (not
+    // created in this call) via parentId silently misrouted to root and,
+    // when root is a bpmn:Collaboration, crashed one level later inside
+    // bpmn-js's own shape creation — the exact case the upfront
+    // Collaboration-safety guard above was meant to prevent.
     let parent = root;
     if (el.parentId) {
-      const realParentId = idMap[el.parentId];
-      if (realParentId) {
-        parent = elementRegistry.get(realParentId) || root;
+      const targetId = idMap[el.parentId] || (el.parentId as string);
+      const resolvedParent = elementRegistry.get(targetId);
+      if (!resolvedParent) {
+        throw new Error(`parentId "${el.parentId}" does not match any element created earlier in this call or already on canvas`);
       }
+      const parentBo = resolvedParent.businessObject;
+      if (parentBo.$type !== 'bpmn:SubProcess') {
+        throw new Error(`parentId "${el.parentId}" resolves to a ${parentBo.$type}, not a bpmn:SubProcess`);
+      }
+      const isExpanded = (resolvedParent as any).isExpanded ?? (resolvedParent as any).di?.isExpanded ?? false;
+      if (!isExpanded) {
+        throw new Error(`parentId "${el.parentId}" resolves to a collapsed subprocess — expand it first`);
+      }
+      parent = resolvedParent;
     }
 
     let shape: any;
@@ -3773,6 +3826,42 @@ async function buildProcess(
 
   }}); // end mcp.compound — all elements + flows are a single undo step
 
+  // Undo the cascade (#13): restore every pre-existing element outside the
+  // newly-created elements' own ancestor chain back to its exact pre-create
+  // bounds. Walking .parent up to the root (rather than hardcoding
+  // "subprocess + pool" as two levels) handles arbitrary nesting depth —
+  // ancestors legitimately may need to have grown to contain new content;
+  // everything else must not have changed at all.
+  const allowedToChange = new Set<string>();
+  for (const realId of Object.values(idMap)) {
+    let node: any = elementRegistry.get(realId);
+    while (node) {
+      allowedToChange.add(node.id);
+      node = node.parent;
+    }
+  }
+  for (const [id, original] of preCreatePositions) {
+    if (allowedToChange.has(id)) continue;
+    const shape = elementRegistry.get(id);
+    if (!shape) continue;
+    const sizeChanged = shape.width !== original.width || shape.height !== original.height;
+    const positionChanged = shape.x !== original.x || shape.y !== original.y;
+    if (!sizeChanged && !positionChanged) continue;
+    try {
+      if (sizeChanged) {
+        // resizeShape only — some element types (events) reject resize
+        // commands with a fixed, non-resizable size in bpmn-js's rule
+        // layer, so only take this path when a real size change needs
+        // undoing.
+        modeling.resizeShape(shape, { x: original.x, y: original.y, width: original.width, height: original.height });
+      } else {
+        modeling.moveElements([shape], { x: original.x - shape.x, y: original.y - shape.y });
+      }
+    } catch {
+      // best-effort — leave shapes that can't be restored where they are
+    }
+  }
+
   // This incremental path is now only reached for one narrow case:
   // build_process targeting an expanded subprocess (parentId) inside an
   // *existing* collaboration, since that's the one scenario the new
@@ -3783,10 +3872,15 @@ async function buildProcess(
   // Elements without a (logical, batch-scoped) parentId can't be scoped
   // this way — same bounded limitation as before, just narrower now.
   if (autoLayoutFlag) {
+    // Same logical-id-or-real-id fallback as the parent-resolution fix
+    // above (#10) — a parentId targeting a pre-existing subprocess (not
+    // created in this call) has no idMap entry, so without this fallback
+    // scopeIds ends up empty and layoutSubtree is silently never invoked
+    // for exactly the case this block exists to handle.
     const scopeIds = new Set(
       elements
         .filter((el: any) => el.parentId)
-        .map((el: any) => idMap[el.parentId as string])
+        .map((el: any) => idMap[el.parentId as string] || (el.parentId as string))
         .filter(Boolean),
     );
     for (const scopeId of scopeIds) {
