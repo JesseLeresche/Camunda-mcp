@@ -3178,6 +3178,130 @@ function findFlowElementById(container: any, id: string): any {
   return undefined;
 }
 
+/** Finds `scopeId`'s flow-node container — an expanded bpmn:SubProcess anywhere in the tree, searched across every bpmn:Process root (every participant, if the diagram has a collaboration). */
+export function findScopeContainer(definitions: any, scopeId: string): any {
+  for (const process of definitions.rootElements?.filter((el: any) => el.$type === 'bpmn:Process') || []) {
+    const found = findFlowElementById(process, scopeId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Pure half of the #10 subtree-scoped auto-layout primitive: extracts
+ * `scopeId`'s current children into a standalone temp bpmn:Process, lays it
+ * out via the normal layoutProcess + Phase 2 post-processing pipeline, and
+ * returns the resulting DI shapes/edges. No live services touched here —
+ * same moddle-object-transform shape as composePoolsAndLanes, so it's
+ * unit-testable against a fixture the same way.
+ *
+ * TextAnnotation/Group/Association children are excluded from the temp
+ * process (layoutProcess only understands flow nodes + sequence flows,
+ * same reason Phase 3's extractComposition strips them before ever calling
+ * it) and are simply left untouched — they never appear in the returned
+ * `shapes`, so the live merge step in `layoutSubtree` below has nothing to
+ * move for them.
+ */
+export async function layoutSubtreeXml(
+  definitions: any,
+  scopeId: string,
+  moddle: any,
+  expandedIds: Set<string>,
+): Promise<{ shapes: any[]; edges: any[] }> {
+  const scopeBo = findScopeContainer(definitions, scopeId);
+  if (!scopeBo) throw new Error(`Element "${scopeId}" not found`);
+  if (!scopeBo.flowElements?.length) throw new Error(`Element "${scopeId}" has no children to lay out`);
+
+  const layoutableFlowElements = scopeBo.flowElements.filter(
+    (fe: any) => fe.$type !== 'bpmn:TextAnnotation' && fe.$type !== 'bpmn:Group' && fe.$type !== 'bpmn:Association',
+  );
+  if (!layoutableFlowElements.length) throw new Error(`Element "${scopeId}" has no flow-node children to lay out`);
+
+  const tempDefs = moddle.create('bpmn:Definitions', {
+    id: 'Definitions_subtree', targetNamespace: 'http://bpmn.io/schema/bpmn', rootElements: [],
+  });
+  const tempProcess = moddle.create('bpmn:Process', { id: 'Process_subtree', flowElements: layoutableFlowElements });
+  tempProcess.$parent = tempDefs;
+  for (const fe of layoutableFlowElements) fe.$parent = tempProcess;
+  tempDefs.rootElements = [tempProcess];
+
+  const expandedBos: any[] = [];
+  for (const id of expandedIds) {
+    const bo = findFlowElementById(tempProcess, id);
+    if (bo) expandedBos.push(bo);
+  }
+  seedExpandedHints(moddle, tempDefs, tempProcess, expandedBos);
+
+  const { xml: tempXml } = await moddle.toXML(tempDefs, { format: false });
+  const rawLaidOutXml = await layoutProcess(tempXml);
+  const postXml = await applyPostProcessing(rawLaidOutXml, moddle);
+  const { rootElement: laidOutDefs } = await moddle.fromXML(postXml);
+  const planeElements: any[] = laidOutDefs.diagrams[0].plane.planeElement;
+
+  return {
+    shapes: planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape'),
+    edges: planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge'),
+  };
+}
+
+/**
+ * Live half of #10: runs `layoutSubtreeXml` against the current diagram,
+ * then merges the result back by moving each live shape to its new
+ * position individually via `modeling.moveElements` — same mechanic
+ * `correctLanePositions` already uses — instead of a wholesale `importXML`,
+ * so content outside `scopeId` is never touched. bpmn-js re-routes each
+ * moved shape's connections as part of that command, same as a user
+ * dragging it, so internal sequence flows don't need hand-rolled routing.
+ *
+ * The relaid-out subtree is anchored at its own current top-left corner
+ * (not the origin bpmn-auto-layout assigns starting from scratch), so it
+ * resettles roughly where it already was instead of jumping to (0,0). If
+ * the new layout comes out a different size than before, it can in
+ * principle overlap neighboring content outside scope — an accepted,
+ * documented tradeoff (see #10), not solved here.
+ */
+async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{ positioned: number; routed: number }> {
+  const { moddle, modeling, elementRegistry, injector } = services;
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  const { xml: currentXml } = await modeler.saveXML({ format: false });
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const expandedIds = collectExpandedSubprocessIds(elementRegistry);
+  const { shapes, edges } = await layoutSubtreeXml(definitions, scopeId, moddle, expandedIds);
+
+  const liveShapes = shapes
+    .map((s: any) => elementRegistry.get(s.bpmnElement.id))
+    .filter(Boolean);
+  if (liveShapes.length === 0) {
+    throw new Error(`Element "${scopeId}" has no children currently on canvas to reposition`);
+  }
+
+  const liveBbox = bboxOfShapes(liveShapes.map((s: any) => ({ bounds: { x: s.x, y: s.y, width: s.width, height: s.height } })));
+  const laidOutBbox = bboxOfShapes(shapes);
+  const dx = liveBbox.x - laidOutBbox.x;
+  const dy = liveBbox.y - laidOutBbox.y;
+
+  for (const s of shapes) {
+    const liveShape = elementRegistry.get(s.bpmnElement.id);
+    if (!liveShape) continue;
+    const moveDx = (s.bounds.x + dx) - liveShape.x;
+    const moveDy = (s.bounds.y + dy) - liveShape.y;
+    if (moveDx === 0 && moveDy === 0) continue;
+    try {
+      modeling.moveElements([liveShape], { x: moveDx, y: moveDy });
+    } catch {
+      // best-effort — leave shapes that can't be moved where they are
+    }
+  }
+
+  return { positioned: shapes.length, routed: edges.length };
+}
+
 /**
  * Standalone `auto_layout` tool, migrated to bpmn-auto-layout. Re-lays out
  * the whole current diagram (positions are replaced wholesale — matches the
@@ -3189,13 +3313,11 @@ function findFlowElementById(container: any, id: string): any {
  * direct `layoutProcess` call below, which only ever handles a single flat
  * process.
  *
- * `elementId` (subprocess-scoped layout) is not yet supported by either
- * path — true subtree-only layout (extract just that subprocess's children,
- * lay out in isolation, merge positions back without touching anything
- * else) is real, separate work not yet built (tracked in #10). Rather than
- * silently ignoring the scope, honor the request by widening it to the
- * whole diagram and say so via `warning` — a wider blast radius than
- * requested, but never a silent one.
+ * `elementId` (subprocess-scoped layout) is handled upfront by
+ * `layoutSubtree` (#10) before either of those paths is reached — true
+ * subtree-only layout (extract just that subprocess's children, lay out in
+ * isolation, merge positions back without touching anything else), not a
+ * whole-diagram-widening fallback.
  */
 /**
  * Live post-import correction pass: for any lane member whose actual Y
@@ -3238,7 +3360,7 @@ function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): vo
   }
 }
 
-async function layoutViaComposition(currentXml: string, services: BpmnServices, scopeId?: string): Promise<any> {
+async function layoutViaComposition(currentXml: string, services: BpmnServices): Promise<any> {
   const { moddle, injector } = services;
   let modeler: any;
   try {
@@ -3269,9 +3391,6 @@ async function layoutViaComposition(currentXml: string, services: BpmnServices, 
 
   const result: Record<string, unknown> = { positioned, routed, participants: extracted.participants.length };
   if (warnings.length) result.warnings = warnings;
-  if (scopeId) {
-    result.warning = `Subprocess-scoped auto-layout ("elementId") isn't supported alongside pool/lane composition yet — the whole diagram was laid out instead of just "${scopeId}".`;
-  }
   return result;
 }
 
@@ -3281,6 +3400,10 @@ async function layoutDiagramViaAutoLayout(
 ): Promise<any> {
   const { moddle, injector, elementRegistry } = services;
   const scopeId = params.elementId as string | undefined;
+
+  if (scopeId) {
+    return await layoutSubtree(scopeId, services);
+  }
 
   let modeler: any;
   try {
@@ -3301,7 +3424,7 @@ async function layoutDiagramViaAutoLayout(
   );
   if (hasCollaboration || hasLanes || hasAnnotationsOrGroups) {
     try {
-      return await layoutViaComposition(currentXml, services, scopeId);
+      return await layoutViaComposition(currentXml, services);
     } catch (err: any) {
       // No ELK fallback (removed entirely, see #9) — surface a clear error
       // instead of silently degrading to a different, unmaintained engine.
@@ -3330,9 +3453,6 @@ async function layoutDiagramViaAutoLayout(
   const routed = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge').length;
 
   const result: Record<string, unknown> = { positioned, routed };
-  if (scopeId) {
-    result.warning = `Subprocess-scoped auto-layout ("elementId") isn't supported by the new layout engine yet — the whole diagram was laid out instead of just "${scopeId}".`;
-  }
   return result;
 }
 
@@ -3598,18 +3718,30 @@ async function buildProcess(
 
   }}); // end mcp.compound — all elements + flows are a single undo step
 
-  // No auto-layout step here (deliberately — ELK/smartAutoLayout was
-  // removed entirely, see #9). This incremental path is now only reached
-  // for one narrow case: build_process targeting an expanded subprocess
-  // (parentId) inside an *existing* collaboration, since that's the one
-  // scenario the new bpmn-auto-layout pipeline can't handle (it only ever
-  // sees the first bpmn:Process — see CollaborationUnsupportedError).
-  // Elements are still created correctly here, just without auto-arranging
-  // afterward — a real but bounded, honestly-documented limitation, same
-  // class as the standalone layout tool's elementId-scoping fallback.
-  // Tracked in #10 (a proper "extract subtree, lay out in isolation, merge
-  // back" primitive would fix this and that gap at once; deliberately not
-  // rushed in here under Phase 4 time pressure — see #10 for why).
+  // This incremental path is now only reached for one narrow case:
+  // build_process targeting an expanded subprocess (parentId) inside an
+  // *existing* collaboration, since that's the one scenario the new
+  // bpmn-auto-layout pipeline can't handle (it only ever sees the first
+  // bpmn:Process — see CollaborationUnsupportedError). If autoLayout was
+  // requested, auto-arrange each distinct target subprocess afterward via
+  // the true subtree-scoped primitive (#10) instead of leaving it a no-op.
+  // Elements without a (logical, batch-scoped) parentId can't be scoped
+  // this way — same bounded limitation as before, just narrower now.
+  if (autoLayoutFlag) {
+    const scopeIds = new Set(
+      elements
+        .filter((el: any) => el.parentId)
+        .map((el: any) => idMap[el.parentId as string])
+        .filter(Boolean),
+    );
+    for (const scopeId of scopeIds) {
+      try {
+        await layoutSubtree(scopeId as string, services);
+      } catch {
+        // best-effort — a subprocess that can't be auto-arranged shouldn't fail the whole build
+      }
+    }
+  }
 
   const result: Record<string, unknown> = {
     idMap,
