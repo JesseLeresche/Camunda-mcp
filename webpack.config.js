@@ -8,6 +8,8 @@ module.exports = {
     filename: 'client.js'
   },
   module: {
+    // elk.bundled.js is a large GWT-compiled file — skip full AST parsing for speed
+    noParse: /elk\.bundled\.js$/,
     rules: [
       {
         test: /\.ts$/,
@@ -22,7 +24,14 @@ module.exports = {
     ]
   },
   resolve: {
-    extensions: ['.ts', '.js']
+    extensions: ['.ts', '.js'],
+    alias: {
+      // elkjs main.js optionally requires 'web-worker' (a Node.js dependency).
+      // In the browser/Electron renderer we use the self-contained bundled build
+      // which has no external dependencies. The $ suffix means exact match only,
+      // so 'elkjs' resolves here but 'elkjs/lib/...' still resolves normally.
+      'elkjs$': path.resolve(__dirname, 'node_modules/elkjs/lib/elk.bundled.js')
+    }
   },
   externals: {
     electron: 'commonjs2 electron'

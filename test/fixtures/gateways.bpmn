@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_gateways" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_gateways" isExecutable="true">
+    <bpmn:startEvent id="start">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:parallelGateway id="split" name="Split">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="taskA" name="Reserve Inventory">
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="taskB" name="Authorize Payment">
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f5</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="join" name="Join">
+      <bpmn:incoming>f4</bpmn:incoming>
+      <bpmn:incoming>f5</bpmn:incoming>
+      <bpmn:outgoing>f6</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:exclusiveGateway id="decision" name="Value High?" default="f7">
+      <bpmn:incoming>f6</bpmn:incoming>
+      <bpmn:outgoing>f7</bpmn:outgoing>
+      <bpmn:outgoing>f8</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="approval" name="Manager Approval">
+      <bpmn:incoming>f8</bpmn:incoming>
+      <bpmn:outgoing>f9</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="merge" name="Merge">
+      <bpmn:incoming>f7</bpmn:incoming>
+      <bpmn:incoming>f9</bpmn:incoming>
+      <bpmn:outgoing>f10</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="end" name="Done">
+      <bpmn:incoming>f10</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="split" />
+    <bpmn:sequenceFlow id="f2" sourceRef="split" targetRef="taskA" />
+    <bpmn:sequenceFlow id="f3" sourceRef="split" targetRef="taskB" />
+    <bpmn:sequenceFlow id="f4" sourceRef="taskA" targetRef="join" />
+    <bpmn:sequenceFlow id="f5" sourceRef="taskB" targetRef="join" />
+    <bpmn:sequenceFlow id="f6" sourceRef="join" targetRef="decision" />
+    <bpmn:sequenceFlow id="f7" name="Low" sourceRef="decision" targetRef="merge" />
+    <bpmn:sequenceFlow id="f8" name="High" sourceRef="decision" targetRef="approval" />
+    <bpmn:sequenceFlow id="f9" sourceRef="approval" targetRef="merge" />
+    <bpmn:sequenceFlow id="f10" sourceRef="merge" targetRef="end" />
+  </bpmn:process>
+</bpmn:definitions>

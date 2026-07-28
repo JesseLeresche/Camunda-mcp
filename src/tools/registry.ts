@@ -18,6 +18,13 @@ export const addStartEventSchema = z.object({
   x: z.number().default(200).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  eventDefinitionType: z.enum([
+    'bpmn:MessageEventDefinition', 'bpmn:SignalEventDefinition', 'bpmn:TimerEventDefinition', 'none',
+  ]).default('none').describe('Start event definition type. A process may only have one blank (none) start event — use a typed start event (e.g. Message) to model a second, distinct trigger.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  timerValue: z.string().optional().describe('For eventDefinitionType bpmn:TimerEventDefinition: ISO 8601 timer expression (e.g. PT1H, R/PT5M).'),
+  timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type when eventDefinitionType is bpmn:TimerEventDefinition.'),
 });
 
 /**
@@ -31,6 +38,10 @@ export const addTaskSchema = z.object({
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  messageRef: z.string().optional().describe('Message name for ReceiveTask (required by Camunda validation) or SendTask (optional). Find-or-creates a bpmn:Message root element with this name.'),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for ReceiveTask only — required by Camunda validation alongside messageRef so Zeebe can correlate the incoming message to a running process instance.'),
+  taskType: z.string().optional().describe('Zeebe job type. Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask. Settable here at creation instead of a follow-up set_properties/patch_element call.'),
+  taskRetries: z.string().optional().describe('Zeebe retry count for taskType (default "3").'),
 });
 
 /**
@@ -55,6 +66,8 @@ export const connectElementsSchema = z.object({
     x: z.number().describe('X coordinate of the bendpoint'),
     y: z.number().describe('Y coordinate of the bendpoint'),
   })).optional().describe('Optional array of {x, y} coordinates defining the connection routing path. Include source and target connection points for full control, or just intermediate bendpoints for L-shaped/orthogonal routing.'),
+  conditionExpression: z.string().optional().describe('FEEL/JUEL condition for this sequence flow. Every non-default flow out of a gateway (or an activity with multiple outgoing flows) must have either this or isDefault set, or Camunda validation fails.'),
+  isDefault: z.boolean().optional().describe('Mark this flow as the default flow of its source element (gateway/activity). Satisfies the "condition or default" validation rule without a conditionExpression. Only one outgoing flow per source can be default.'),
 });
 
 /**
@@ -131,6 +144,13 @@ export const addEventSchema = z.object({
   attachedToId: z.string().optional().describe('Host element ID (required for BoundaryEvent)'),
   cancelActivity: z.boolean().default(true).describe('For BoundaryEvent: interrupting (true) or non-interrupting (false)'),
   boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).default('bottom').describe('Where to place the boundary event on the host element edge'),
+  errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for type IntermediateCatchEvent or BoundaryEvent with eventDefinitionType bpmn:MessageEventDefinition — required by Camunda validation alongside messageRef so Zeebe can correlate the incoming message. Not applicable to IntermediateThrowEvent.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('For eventDefinitionType bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
   timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process (ignored for BoundaryEvent)'),
@@ -160,8 +180,9 @@ export const setPropertiesSchema = z.object({
   implementationValue: z.string().optional().describe('Class name, expression, or connector ID'),
   taskTopic: z.string().optional().describe('External task topic (Camunda 7)'),
   taskPriority: z.string().optional().describe('Task priority'),
-  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8). Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
   taskRetries: z.string().optional().describe('Zeebe retry count'),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for a ReceiveTask, or a boundary/intermediate catch event with a message reference — required by Camunda validation alongside messageRef.'),
   isExecutable: z.boolean().optional().describe('Process isExecutable flag'),
 });
 
@@ -213,6 +234,20 @@ export const importXmlSchema = z.object({
   xml: z.string().describe('Complete BPMN 2.0 XML to import'),
 });
 
+/**
+ * Zod schema for the set_execution_platform_version tool.
+ * Corrects the target Camunda 8 execution platform version on whichever
+ * diagram is currently open — needed because not every diagram is created
+ * via create_model (e.g. one authored directly in Modeler and only
+ * populated via MCP tools afterward carries no version stamp from this
+ * plugin at all).
+ */
+export const setExecutionPlatformVersionSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  version: z.string().describe('Target execution platform version, e.g. "8.10" or "8.10.0", matching your connected Zeebe cluster.'),
+  platform: z.string().default('Camunda Cloud').describe('Execution platform name (default "Camunda Cloud").'),
+});
+
 // ---------------------------------------------------------------------------
 // v0.3 schemas
 // ---------------------------------------------------------------------------
@@ -255,6 +290,12 @@ export const addEndEventTypedSchema = z.object({
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
+  messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
+  signalRef: z.string().optional().describe('For eventDefinitionType bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('For eventDefinitionType bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
 });
 
 export const addMessageFlowSchema = z.object({
@@ -385,18 +426,27 @@ export const buildProcessSchema = z.object({
     parentId: z.string().optional().describe('Logical ID of parent expanded subprocess'),
     properties: z.object({
       conditionExpression: z.string().optional(),
-      taskType: z.string().optional().describe('Zeebe job type'),
+      taskType: z.string().optional().describe('Zeebe job type — required by Camunda validation for serviceTask, sendTask, businessRuleTask, and scriptTask (not just serviceTask).'),
       taskRetries: z.string().optional(),
       documentation: z.string().optional(),
       implementationType: z.enum(['class', 'delegateExpression', 'expression', 'external', 'connector']).optional(),
       implementationValue: z.string().optional(),
       isExecutable: z.boolean().optional(),
+      errorRef: z.string().optional().describe('For endEventError or an eventDefinitionType of bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+      errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
+      messageRef: z.string().optional().describe('For endEventMessage, an eventDefinitionType of bpmn:MessageEventDefinition, or a receiveTask (required)/sendTask (optional): message name. Find-or-creates a bpmn:Message root element.'),
+      correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for a receiveTask, or a boundaryEvent/intermediateCatchEvent with eventDefinitionType bpmn:MessageEventDefinition — required by Camunda validation alongside messageRef. Not applicable to startEvent, intermediateThrowEvent, or sendTask.'),
+      signalRef: z.string().optional().describe('For endEventSignal or an eventDefinitionType of bpmn:SignalEventDefinition: signal name. Find-or-creates a bpmn:Signal root element.'),
+      escalationRef: z.string().optional().describe('For endEventEscalation or an eventDefinitionType of bpmn:EscalationEventDefinition: escalation name. Find-or-creates a bpmn:Escalation root element.'),
+      escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
+      timerValue: z.string().optional().describe('For eventDefinitionType bpmn:TimerEventDefinition (startEvent, intermediate events, boundaryEvent): ISO 8601 timer expression (e.g. PT1H, R/PT5M).'),
+      timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type when eventDefinitionType is bpmn:TimerEventDefinition (default timeDuration).'),
     }).optional().describe('Properties to set on the element after creation'),
     width: z.number().optional().describe('Width for subprocesses/groups'),
     height: z.number().optional().describe('Height for subprocesses/groups'),
     collapsed: z.boolean().optional().describe('Collapsed subprocess'),
     calledElement: z.string().optional().describe('Process ID for CallActivity'),
-    eventDefinitionType: z.string().optional().describe('Event definition type for intermediate/boundary events'),
+    eventDefinitionType: z.string().optional().describe('Event definition type for startEvent (Message/Signal/Timer only — a process may only have one blank start event), intermediate events, or boundary events.'),
     attachedToId: z.string().optional().describe('Logical ID of host element for BoundaryEvent'),
     cancelActivity: z.boolean().optional().describe('Interrupting boundary event (default true)'),
     boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('Where to place boundary event on host edge (default bottom)'),
@@ -406,6 +456,7 @@ export const buildProcessSchema = z.object({
     to: z.string().describe('Logical ID of target element'),
     name: z.string().optional().describe('Flow label'),
     conditionExpression: z.string().optional().describe('FEEL/JUEL condition'),
+    isDefault: z.boolean().optional().describe('Mark as the default flow of its source element. Satisfies validation without a conditionExpression; only one outgoing flow per source can be default.'),
     waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
   })).optional().describe('Sequence flows to create between elements'),
   autoLayout: z.boolean().default(false).describe('Apply Modeler auto-layout after building'),
@@ -428,8 +479,9 @@ export const patchElementSchema = z.object({
   implementationValue: z.string().optional(),
   taskTopic: z.string().optional(),
   taskPriority: z.string().optional(),
-  taskType: z.string().optional().describe('Zeebe job type (Camunda 8)'),
+  taskType: z.string().optional().describe('Zeebe job type (Camunda 8). Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
   taskRetries: z.string().optional(),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for a ReceiveTask, or a boundary/intermediate catch event with a message reference — required by Camunda validation alongside messageRef.'),
   isExecutable: z.boolean().optional(),
   waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional().describe('New waypoints for sequence/message flows'),
   x: z.number().optional().describe('Move element to new x center coordinate'),
@@ -460,14 +512,16 @@ export const switchDiagramSchema = z.object({
 // ===========================================================================
 
 export const manageDiagramSchema = z.object({
-  operation: z.enum(['create', 'list', 'switch', 'save', 'export_image', 'import_xml', 'get_xml'])
+  operation: z.enum(['create', 'list', 'switch', 'save', 'export_image', 'import_xml', 'get_xml', 'set_execution_platform_version'])
     .describe('Diagram-level action to perform'),
-  diagramId: z.string().optional().describe('Target diagram ID (returned by create). Required for save/export_image/import_xml/get_xml; optional for switch.'),
+  diagramId: z.string().optional().describe('Target diagram ID (returned by create). Required for save/export_image/import_xml/get_xml/set_execution_platform_version; optional for switch.'),
   name: z.string().optional().describe('create: diagram name. switch: diagram name (partial, case-insensitive).'),
   filePath: z.string().optional().describe('save/export_image: absolute output path. switch: .bpmn file path to match.'),
   format: z.enum(['svg', 'png']).optional().describe('export_image: image format (default png)'),
   scale: z.number().optional().describe('export_image: PNG scale factor (default 2)'),
   xml: z.string().optional().describe('import_xml: complete BPMN 2.0 XML to import'),
+  version: z.string().optional().describe('set_execution_platform_version: target version, e.g. "8.10", matching your connected Zeebe cluster.'),
+  platform: z.string().optional().describe('set_execution_platform_version: execution platform name (default "Camunda Cloud").'),
 });
 
 export const addElementSchema = z.object({
@@ -479,13 +533,23 @@ export const addElementSchema = z.object({
   x: z.number().optional().describe('Canvas x coordinate'),
   y: z.number().optional().describe('Canvas y coordinate'),
   parentId: z.string().optional().describe('Parent expanded subprocess ID (nest the element inside it)'),
-  // end / event
-  eventDefinitionType: z.string().optional().describe('Event/end definition (Timer, Message, Signal, Error, Escalation, Conditional, Compensate, Terminate). end: presence (≠ none) creates a typed end event.'),
+  // start / end / event
+  eventDefinitionType: z.string().optional().describe('Event/start/end definition (Timer, Message, Signal, Error, Escalation, Conditional, Compensate, Terminate). end/start: presence (≠ none) creates a typed start/end event — a process may only have one blank start event, so use a typed one (e.g. Message) for a second distinct trigger. start supports Message/Signal/Timer only.'),
   attachedToId: z.string().optional().describe('event: host element ID (required for boundary events)'),
   cancelActivity: z.boolean().optional().describe('event boundary: interrupting (true) vs non-interrupting (false)'),
   boundaryPosition: z.enum(['bottom', 'bottom-left', 'bottom-right', 'top', 'top-left', 'top-right', 'left', 'right']).optional().describe('event boundary: placement on host edge'),
   timerValue: z.string().optional().describe('event: ISO 8601 timer expression (e.g. PT1H)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('event: timer type'),
+  errorRef: z.string().optional().describe('end/event (ErrorEventDefinition): error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
+  errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
+  messageRef: z.string().optional().describe('start/end/event (MessageEventDefinition), or task (ReceiveTask required, SendTask optional): message name. Find-or-creates a bpmn:Message root element.'),
+  correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for task (ReceiveTask) or event (BoundaryEvent/IntermediateCatchEvent with MessageEventDefinition) — required by Camunda validation alongside messageRef. Not applicable to start, SendTask, or IntermediateThrowEvent.'),
+  signalRef: z.string().optional().describe('start/end/event (SignalEventDefinition): signal name. Find-or-creates a bpmn:Signal root element.'),
+  escalationRef: z.string().optional().describe('end/event (EscalationEventDefinition): escalation name. Find-or-creates a bpmn:Escalation root element.'),
+  escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
+  // task
+  taskType: z.string().optional().describe('task: Zeebe job type. Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.'),
+  taskRetries: z.string().optional().describe('task: Zeebe retry count for taskType (default "3").'),
   // subprocess / pool / group
   width: z.number().optional().describe('subprocess/pool/group: width'),
   height: z.number().optional().describe('subprocess/pool/group: height'),
@@ -509,6 +573,8 @@ export const connectSchema = z.object({
   flowId: z.string().optional().describe('set_waypoints: ID of the existing flow to re-route'),
   waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional()
     .describe('sequence_flow: optional routing path. set_waypoints: new path including source/target points (min 2).'),
+  conditionExpression: z.string().optional().describe('sequence_flow: FEEL/JUEL condition. Required (or isDefault) for every non-default flow out of a gateway/activity with multiple outgoing flows.'),
+  isDefault: z.boolean().optional().describe('sequence_flow: mark as the default flow of its source element. Only one outgoing flow per source can be default.'),
 });
 
 export const updateElementSchema = z.object({
@@ -526,6 +592,7 @@ export const updateElementSchema = z.object({
   taskPriority: z.string().optional().describe('properties: task priority'),
   taskType: z.string().optional().describe('properties: Zeebe job type (Camunda 8)'),
   taskRetries: z.string().optional().describe('properties: Zeebe retry count'),
+  correlationKey: z.string().optional().describe('properties: FEEL expression (e.g. "=orderId") for a ReceiveTask or message catch event — required by Camunda validation alongside a message reference'),
   isExecutable: z.boolean().optional().describe('properties: process isExecutable flag'),
   // move
   x: z.number().optional().describe('move: new center x'),
@@ -541,13 +608,25 @@ export const updateElementSchema = z.object({
 });
 
 export const queryDiagramSchema = z.object({
-  operation: z.enum(['list', 'get', 'bounds'])
-    .describe('list = all elements; get = one element detail; bounds = exact rendered geometry of one element'),
+  operation: z.enum(['list', 'get', 'bounds', 'validate'])
+    .describe('list = all elements; get = one element detail; bounds = exact rendered geometry of one element; validate = live Camunda validation errors/warnings for the whole diagram (same data as Modeler\'s Problems panel).'),
   diagramId: z.string().describe('ID returned by manage_diagram create'),
   elementId: z.string().optional().describe('get/bounds: element ID'),
   typeFilter: z.string().optional().describe('list: filter by BPMN type prefix, e.g. "bpmn:Task"'),
   parentId: z.string().optional().describe('list: filter to elements inside this expanded subprocess'),
   fields: z.array(z.string()).optional().describe('list: fields to include per element (id always included)'),
+  severity: z.enum(['error', 'warn', 'all']).optional().describe('validate: minimum/exact severity to include (default "all")'),
+});
+
+/**
+ * Zod schema for the validate_diagram tool.
+ * Reads Camunda Modeler's own live linting service directly — the exact
+ * same data backing the Problems panel — instead of reimplementing
+ * Camunda's validation rules ourselves.
+ */
+export const validateDiagramSchema = z.object({
+  diagramId: z.string().describe('ID returned by create_model'),
+  severity: z.enum(['error', 'warn', 'all']).default('all').describe('Minimum/exact severity to include.'),
 });
 
 export const manageElementSchema = z.object({
@@ -625,7 +704,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'manage_diagram',
     description:
-      'Diagram lifecycle and I/O. operation: create (new empty BPMN tab), list (open tabs), switch (active tab by id/path/name), save (write .bpmn to filePath), export_image (PNG/SVG), import_xml (replace from XML), get_xml (export XML).',
+      'Diagram lifecycle and I/O. operation: create (new empty BPMN tab), list (open tabs), switch (active tab by id/path/name), save (write .bpmn to filePath), export_image (PNG/SVG), import_xml (replace from XML), get_xml (export XML), set_execution_platform_version (correct the target Camunda 8 version on the open diagram, e.g. to match your Zeebe cluster).',
     inputSchema: manageDiagramSchema,
     executeLocal: false,
   },
@@ -660,7 +739,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'query_diagram',
     description:
-      'Reads diagram state. operation: list (all elements, optional typeFilter/fields), get (full detail incl. properties, extensions, connections), bounds (exact rendered geometry, edge connection points, waypoints).',
+      'Reads diagram state. operation: list (all elements, optional typeFilter/fields), get (full detail incl. properties, extensions, connections), bounds (exact rendered geometry, edge connection points, waypoints), validate (live Camunda validation errors/warnings — the same data as Modeler\'s Problems panel; call this after build_process/batch_operations to confirm the diagram is actually valid instead of assuming so).',
     inputSchema: queryDiagramSchema,
     executeLocal: false,
   },

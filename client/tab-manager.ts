@@ -45,8 +45,14 @@ declare global {
         name: string;
         filePath?: string;
       }>;
+      openDiagram: (filePath: string) => Promise<{ id: string; name: string; filePath?: string }>;
       autoLayout: () => Promise<{ applied: boolean }>;
     };
+    // Kept in sync with app.activeTabChanged so routeDispatch (bpmn-tools.ts)
+    // can tell, from inside a per-tab bpmn-js module, whether a requested
+    // diagramId is actually the active tab — the two plugin surfaces mount
+    // independently and have no other shared reference to compare against.
+    __mcpActiveTabId?: string | null;
   }
 }
 
@@ -64,6 +70,7 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
       if (activeTab) {
         this._activeTabId = activeTab.id;
         this._tabs.set(activeTab.id, activeTab);
+        window.__mcpActiveTabId = activeTab.id;
       }
     });
 
@@ -71,6 +78,7 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     window.__mcpTabManager = {
       listTabs: () => this.listTabs(),
       switchTab: (params) => this.switchTab(params),
+      openDiagram: (filePath) => this.openDiagram(filePath),
       autoLayout: () => this.autoLayout(),
     };
 
@@ -140,15 +148,60 @@ class McpTabExtension extends PureComponent<TabManagerProps> {
     }
 
     const target = matches[0];
+    const targetPath = target.file?.path;
+
+    // Camunda Modeler's triggerAction('select-tab', ...) only supports
+    // relative 'next'/'previous' navigation — there is no plugin action to
+    // activate an arbitrary already-open tab by reference. The only
+    // reachable path that both finds-or-opens AND activates (via
+    // App#openFiles -> App#showTab) a specific tab is 'open-diagram' with a
+    // file path, which requires the tab to actually be saved to disk.
+    if (!targetPath) {
+      throw new Error(
+        `Cannot switch to tab "${target.name || target.title || 'Untitled'}" — it has no ` +
+        `saved file path, and Camunda Modeler's plugin API has no action to activate an ` +
+        `already-open tab by reference (only by file path, or relative next/previous). ` +
+        `Save the diagram first, or switch to it manually in the Modeler UI.`
+      );
+    }
+
     const { triggerAction } = this.props;
-    await triggerAction('select-tab', { tab: target });
+    await triggerAction('open-diagram', { path: targetPath });
 
     return {
       switched: true,
       tabId: target.id,
       name: target.name || target.title || 'Untitled',
-      filePath: target.file?.path,
+      filePath: targetPath,
     };
+  }
+
+  /**
+   * Opens (or focuses, if already open) a file by path via Modeler's own
+   * 'open-diagram' action — unlike shell.openPath(), this never touches the
+   * OS file-association layer, so it can't get stuck behind an "open with"
+   * picker for unassociated file types.
+   */
+  private async openDiagram(filePath: string): Promise<{ id: string; name: string; filePath?: string }> {
+    const { triggerAction } = this.props;
+    await triggerAction('open-diagram', { path: filePath });
+
+    // app.activeTabChanged may land asynchronously relative to triggerAction's
+    // resolution — poll briefly for the new tab to register.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const activeTab = this._activeTabId ? this._tabs.get(this._activeTabId) : undefined;
+      if (activeTab?.file?.path === filePath) {
+        return {
+          id: activeTab.id,
+          name: activeTab.name || activeTab.title || 'Untitled',
+          filePath: activeTab.file?.path,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    throw new Error(`open-diagram completed but no tab for "${filePath}" registered within 3s`);
   }
 
   private async autoLayout(): Promise<{ applied: boolean; action?: string; error?: string }> {

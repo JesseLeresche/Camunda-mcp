@@ -7,6 +7,10 @@
  * `webContents.executeJavaScript()`.
  */
 
+// @ts-ignore — elkjs ships as a GWT-compiled UMD bundle; resolved via package main field
+import ELK from 'elkjs';
+import { layoutProcess } from 'bpmn-auto-layout';
+
 interface BpmnServices {
   modeling: any;
   elementRegistry: any;
@@ -17,10 +21,101 @@ interface BpmnServices {
   commandStack: any;
 }
 
+type DispatchFn = (tool: string, params: Record<string, unknown>) => Promise<any>;
+
+interface DispatchRegistryEntry {
+  container: HTMLElement;
+  dispatch: DispatchFn;
+}
+
 declare global {
   interface Window {
-    __mcpDispatch?: (tool: string, params: Record<string, unknown>) => Promise<any>;
+    __mcpDispatch?: DispatchFn;
+    __mcpDispatchRegistry?: DispatchRegistryEntry[];
   }
+}
+
+/**
+ * Camunda Modeler keeps every previously-opened tab's bpmn-js instance
+ * mounted (hidden, not destroyed) so undo history/scroll position survive
+ * tab switches. That means registerBpmnJSPlugin's additional module runs
+ * once per tab, ever — not once per tab focus — so a naive
+ * `window.__mcpDispatch = ...` assignment gets permanently claimed by
+ * whichever tab happened to be opened last, regardless of which tab the
+ * user (or a diagramId param) actually intends to target. offsetParent is
+ * null exactly when an element (or an ancestor) is display:none, which is
+ * how Modeler hides inactive cached tabs — a cheap, reliable "is this tab
+ * the one currently on screen" check with no cross-component wiring needed.
+ */
+function isContainerVisible(el: HTMLElement | null): boolean {
+  return !!el && el.offsetParent !== null;
+}
+
+/**
+ * Ensures the tab actually requested via diagramId is the one that ends up
+ * visible before dispatch runs. Visibility alone (below) has no idea which
+ * tab a caller *wants* — it only ever knows which one happens to be on
+ * screen right now, which silently drifts whenever the user (or Modeler
+ * itself) changes focus between an MCP client's calls. window.__mcpActiveTabId
+ * (tab-manager.ts) is the one place that knows the real, current tab id, so
+ * use it to detect a mismatch and switchTab() before falling through to the
+ * visibility-based lookup. switchTab() can't activate an unsaved tab by
+ * reference (no such Modeler action exists) — that case fails loudly here
+ * instead of silently dispatching to whatever's on screen.
+ */
+async function ensureActiveTab(requestedId: string | undefined): Promise<{ error: string } | null> {
+  if (!requestedId || requestedId === window.__mcpActiveTabId) return null;
+
+  const tabManager = window.__mcpTabManager;
+  if (!tabManager) {
+    return { error: `Cannot verify diagramId "${requestedId}" is active — tab manager not initialized.` };
+  }
+
+  try {
+    await tabManager.switchTab({ diagramId: requestedId });
+  } catch (err: any) {
+    return {
+      error: `diagramId "${requestedId}" is not the active tab and could not be activated automatically `
+        + `(${err.message || err}). This commonly happens for unsaved diagrams — Modeler has no action to `
+        + 'activate an already-open tab by reference unless it has a saved file path. Switch to it manually '
+        + 'in the Modeler UI, or save it first, then retry.',
+    };
+  }
+
+  // switchTab's triggerAction resolves before the DOM/activeTabChanged
+  // necessarily settles — poll briefly rather than assume it's immediate.
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && window.__mcpActiveTabId !== requestedId) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+}
+
+async function routeDispatch(tool: string, params: Record<string, unknown>): Promise<any> {
+  const switchError = await ensureActiveTab(params.diagramId as string | undefined);
+  if (switchError) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(switchError) }],
+      isError: true,
+    };
+  }
+
+  const registry = window.__mcpDispatchRegistry || [];
+  const visible = registry.filter((entry) => isContainerVisible(entry.container));
+
+  if (visible.length === 0) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: 'No visible/active BPMN diagram tab found in Modeler — open or focus a diagram tab.' }) }],
+      isError: true,
+    };
+  }
+  if (visible.length > 1) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: `${visible.length} BPMN tabs appear visible simultaneously — cannot determine which is active.` }) }],
+      isError: true,
+    };
+  }
+  return visible[0].dispatch(tool, params);
 }
 
 function McpCommandHandler(
@@ -40,24 +135,37 @@ function McpCommandHandler(
 
   const services: BpmnServices = { modeling, elementRegistry, canvas, moddle, bpmnFactory, injector, commandStack };
 
-  window.__mcpDispatch = async (tool: string, params: Record<string, unknown>) => {
-    console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
-    try {
-      const rawResult = await dispatchRendererTool(tool, params, services);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(rawResult) }],
-      };
-    } catch (err: any) {
-      const message = err.message || String(err);
-      console.error(`[camunda-mcp] Command ${tool} failed:`, message);
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-        isError: true,
-      };
-    }
+  const entry: DispatchRegistryEntry = {
+    container: canvas.getContainer(),
+    dispatch: async (tool: string, params: Record<string, unknown>) => {
+      console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
+      try {
+        const rawResult = await dispatchRendererTool(tool, params, services);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(rawResult) }],
+        };
+      } catch (err: any) {
+        const message = err.message || String(err);
+        console.error(`[camunda-mcp] Command ${tool} failed:`, message);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
   };
 
-  console.log('[camunda-mcp] window.__mcpDispatch registered');
+  window.__mcpDispatchRegistry = window.__mcpDispatchRegistry || [];
+  window.__mcpDispatchRegistry.push(entry);
+  window.__mcpDispatch = routeDispatch;
+
+  // Tab close destroys this instance's bpmn-js Diagram — deregister so the
+  // registry doesn't accumulate zombie entries for closed tabs.
+  eventBus.on('diagram.destroy', () => {
+    window.__mcpDispatchRegistry = (window.__mcpDispatchRegistry || []).filter((e) => e !== entry);
+  });
+
+  console.log('[camunda-mcp] Registered in dispatch registry, size:', window.__mcpDispatchRegistry.length);
 }
 
 (McpCommandHandler as any).$inject = ['eventBus', 'modeling', 'elementRegistry', 'canvas', 'moddle', 'bpmnFactory', 'injector', 'commandStack'];
@@ -200,11 +308,13 @@ async function dispatchRendererTool(
     case 'validate_layout':
       return validateLayout(params, services);
     case 'auto_layout':
-      return smartAutoLayout(params, services);
+      return layoutDiagramViaAutoLayout(params, services);
     case 'export_image':
       return exportImage(params, services);
-    case '__debug_moddle':
-      return debugModdle(services);
+    case 'set_execution_platform_version':
+      return setExecutionPlatformVersion(params, services);
+    case 'validate_diagram':
+      return validateDiagram(params, services);
     default:
       throw new Error(`Unknown renderer tool: "${tool}"`);
   }
@@ -212,12 +322,13 @@ async function dispatchRendererTool(
 
 function addStartEvent(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle, bpmnFactory }: BpmnServices
 ) {
   const name = (params.name as string) || 'Start';
   const x = (params.x as number) || 200;
   const y = (params.y as number) || 200;
   const parentId = params.parentId as string | undefined;
+  const eventDefType = (params.eventDefinitionType as string) || 'none';
 
   const parent = resolveParent(parentId, { elementRegistry, canvas });
 
@@ -227,22 +338,38 @@ function addStartEvent(
     parent
   );
 
+  // A process may only have one *blank* (no event definition) start event —
+  // typing this one (e.g. as a Message Start Event) lets it coexist with
+  // other distinct triggers modeled the same way.
+  if (eventDefType !== 'none') {
+    const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
+    const eventDef = moddle.create(eventDefType, eventDefProps);
+    bo.eventDefinitions = bo.eventDefinitions || [];
+    bo.eventDefinitions.push(eventDef);
+    eventDef.$parent = bo;
+    modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+  }
+
   if (name) {
     modeling.updateLabel(shape, name);
   }
 
-  return { elementId: shape.id, name, x: shape.x, y: shape.y };
+  return { elementId: shape.id, eventDefinitionType: eventDefType, name, x: shape.x, y: shape.y };
 }
 
 function addTask(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle, bpmnFactory }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:Task';
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
   const y = (params.y as number) || 200;
   const parentId = params.parentId as string | undefined;
+  const messageRef = params.messageRef as string | undefined;
+  const taskType = params.taskType as string | undefined;
 
   const parent = resolveParent(parentId, { elementRegistry, canvas });
 
@@ -254,6 +381,33 @@ function addTask(
 
   if (name) {
     modeling.updateLabel(shape, name);
+  }
+
+  // Job-worker task types (Service/Send/BusinessRule/Script) require a Zeebe
+  // task definition for Camunda validation — settable here at creation time
+  // instead of a required follow-up set_properties/patch_element call.
+  if (taskType && moddle.getPackage('zeebe')) {
+    setZeebeTaskDefinition(moddle, modeling, shape, taskType, params.taskRetries as string | undefined);
+  }
+
+  // ReceiveTask requires a Message Reference for Camunda validation; SendTask
+  // may optionally carry one too (both have a messageRef attribute in BPMN).
+  let message: any;
+  if (messageRef && (type === 'bpmn:ReceiveTask' || type === 'bpmn:SendTask')) {
+    const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    if (definitions) {
+      message = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', messageRef);
+      modeling.updateProperties(shape, { messageRef: message });
+    }
+  }
+
+  // ReceiveTask requires a subscription correlationKey on the Message itself
+  // (not the task) — Zeebe needs it to correlate the incoming message
+  // against a running process instance.
+  const correlationKey = params.correlationKey as string | undefined;
+  if (correlationKey && type === 'bpmn:ReceiveTask' && message) {
+    setMessageSubscription(moddle, message, correlationKey);
   }
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
@@ -285,11 +439,13 @@ function addEndEvent(
 
 function connectElements(
   params: Record<string, unknown>,
-  { modeling, elementRegistry }: BpmnServices
+  { modeling, elementRegistry, moddle }: BpmnServices
 ) {
   const sourceId = params.sourceId as string;
   const targetId = params.targetId as string;
   const waypoints = params.waypoints as Array<{ x: number; y: number }> | undefined;
+  const conditionExpression = params.conditionExpression as string | undefined;
+  const isDefault = params.isDefault as boolean | undefined;
 
   const source = elementRegistry.get(sourceId);
   if (!source) {
@@ -309,6 +465,15 @@ function connectElements(
     }, source.parent);
   } else {
     connection = modeling.connect(source, target);
+  }
+
+  if (conditionExpression) {
+    const expr = moddle.create('bpmn:FormalExpression', { body: conditionExpression });
+    modeling.updateProperties(connection, { conditionExpression: expr });
+  }
+
+  if (isDefault) {
+    modeling.updateProperties(source, { default: connection.businessObject });
   }
 
   return { connectionId: connection.id, sourceId, targetId };
@@ -371,10 +536,10 @@ function linkFormZeebe(
 ) {
   // Try embedding the form JSON at process level first (requires zeebe:UserTaskForm)
   let embedded = false;
-  let formKey = '';
+  let userTaskFormId = '';
 
   try {
-    const userTaskFormId = `userTaskForm_${bo.id}`;
+    userTaskFormId = `userTaskForm_${bo.id}`;
     const rootElement = canvas.getRootElement();
     const process = rootElement.businessObject;
 
@@ -391,7 +556,6 @@ function linkFormZeebe(
     });
     processExt.values.push(userTaskForm);
 
-    formKey = `camunda-forms:bpmn:${userTaskFormId}`;
     embedded = true;
     console.log('[camunda-mcp] Embedded form JSON via zeebe:UserTaskForm');
   } catch (err: any) {
@@ -408,15 +572,14 @@ function linkFormZeebe(
   // Remove existing form definitions
   taskExt.values = taskExt.values.filter((v: any) => v.$type !== 'zeebe:FormDefinition');
 
-  const formDefProps: any = {};
-  if (embedded) {
-    formDefProps.formKey = formKey;
-  } else {
-    // Reference by formId — the form would be deployed separately
-    formDefProps.formId = formId;
-  }
-
-  const formDef = moddle.create('zeebe:FormDefinition', formDefProps);
+  // formId must reference the embedded zeebe:UserTaskForm's own id (or the
+  // deployed form's id, in the non-embedded case) — the compat linter
+  // rejects `formKey` alone (`Element of type <zeebe:FormDefinition> must
+  // have property <externalReference> or <formId>`), even though the moddle
+  // schema still accepts it as a legacy attribute.
+  const formDef = moddle.create('zeebe:FormDefinition', {
+    formId: embedded ? userTaskFormId : formId,
+  });
   taskExt.values.push(formDef);
 
   modeling.updateProperties(taskElement, { extensionElements: taskExt });
@@ -424,7 +587,6 @@ function linkFormZeebe(
   return {
     taskId: bo.id, formId, mode: 'zeebe',
     embedded,
-    ...(embedded ? { formKey } : {}),
     message: embedded
       ? `Embedded and linked form "${formId}" to task "${bo.id}" (Camunda 8)`
       : `Linked form "${formId}" to task "${bo.id}" by reference (Camunda 8)`,
@@ -487,9 +649,79 @@ function addGateway(
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y };
 }
 
+/**
+ * Finds an existing root-level bpmn:Error/Message/Signal/Escalation element by
+ * name (or id), or creates one under `definitions.rootElements` if none exists.
+ * Used to wire up event/task reference properties (errorRef, messageRef, ...)
+ * that Camunda validation requires alongside the event definition itself.
+ */
+function findOrCreateRootElement(
+  bpmnFactory: any,
+  definitions: any,
+  refType: 'bpmn:Error' | 'bpmn:Message' | 'bpmn:Signal' | 'bpmn:Escalation',
+  name: string,
+  code?: string,
+): any {
+  if (!definitions.rootElements) definitions.rootElements = [];
+  const existing = definitions.rootElements.find(
+    (el: any) => el.$type === refType && (el.name === name || el.id === name)
+  );
+  if (existing) return existing;
+
+  // Camunda validation requires a non-empty error/escalation code whenever
+  // errorRef/escalationRef is set — default it to the name if none was given
+  // so this can never be silently left blank.
+  const props: Record<string, unknown> = { name };
+  if (refType === 'bpmn:Error') props.errorCode = code || name;
+  if (refType === 'bpmn:Escalation') props.escalationCode = code || name;
+
+  // Use bpmnFactory (not moddle.create) so the element gets an auto-assigned
+  // id via the Ids service — without an id, bpmn-moddle can't serialize a
+  // valid xxxRef attribute pointing back at this element (it writes the
+  // literal string "undefined" instead).
+  const element = bpmnFactory.create(refType, props);
+  element.$parent = definitions;
+  definitions.rootElements.push(element);
+  return element;
+}
+
+/**
+ * Resolves the errorRef/messageRef/signalRef/escalationRef property (if
+ * applicable to eventDefType and present in params) into event-definition
+ * constructor props, find-or-creating the referenced root element.
+ */
+function eventDefRefProps(
+  bpmnFactory: any,
+  moddle: any,
+  definitions: any,
+  eventDefType: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!definitions) return {};
+  const props: Record<string, unknown> = {};
+  if (eventDefType === 'bpmn:ErrorEventDefinition' && params.errorRef) {
+    props.errorRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Error', params.errorRef as string, params.errorCode as string | undefined);
+  } else if (eventDefType === 'bpmn:MessageEventDefinition' && params.messageRef) {
+    props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', params.messageRef as string);
+  } else if (eventDefType === 'bpmn:SignalEventDefinition' && params.signalRef) {
+    props.signalRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Signal', params.signalRef as string);
+  } else if (eventDefType === 'bpmn:EscalationEventDefinition' && params.escalationRef) {
+    props.escalationRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Escalation', params.escalationRef as string, params.escalationCode as string | undefined);
+  } else if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
+    const timerType = (params.timerType as string) || 'timeDuration';
+    props[timerType] = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
+  }
+  return props;
+}
+
+/** Resolves the bpmn:definitions root from a freshly-created shape's business object. */
+function getDefinitions(bo: any, canvas: any): any {
+  return bo?.$parent?.$parent || canvas.getRootElement()?.businessObject?.$parent;
+}
+
 function addEvent(
   params: Record<string, unknown>,
-  { modeling, canvas, moddle, elementRegistry }: BpmnServices
+  { modeling, canvas, moddle, elementRegistry, bpmnFactory }: BpmnServices
 ) {
   const type = params.type as string;
   const eventDefType = (params.eventDefinitionType as string) || 'none';
@@ -525,18 +757,25 @@ function addEvent(
   );
 
   if (eventDefType !== 'none') {
-    const eventDefProps: any = {};
-    if (eventDefType === 'bpmn:TimerEventDefinition' && params.timerValue) {
-      const timerType = (params.timerType as string) || 'timeDuration';
-      const formalExpression = moddle.create('bpmn:FormalExpression', { body: params.timerValue as string });
-      eventDefProps[timerType] = formalExpression;
-    }
-    const eventDef = moddle.create(eventDefType, eventDefProps);
     const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps: any = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
+    const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
     modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+
+    // Message Catch/Boundary events require a subscription correlationKey on
+    // the Message itself (not the event) — not applicable to Throw events.
+    if (
+      eventDefType === 'bpmn:MessageEventDefinition' &&
+      params.correlationKey &&
+      (type === 'bpmn:IntermediateCatchEvent' || type === 'bpmn:BoundaryEvent') &&
+      eventDefProps.messageRef
+    ) {
+      setMessageSubscription(moddle, eventDefProps.messageRef, params.correlationKey as string);
+    }
   }
 
   if (name) modeling.updateLabel(shape, name);
@@ -546,7 +785,7 @@ function addEvent(
 
 function addSubprocess(
   params: Record<string, unknown>,
-  { modeling, canvas, elementRegistry }: BpmnServices
+  { modeling, canvas, elementRegistry, moddle }: BpmnServices
 ) {
   const type = (params.type as string) || 'bpmn:SubProcess';
   const name = (params.name as string) || '';
@@ -566,11 +805,86 @@ function addSubprocess(
   const shape = modeling.createShape(shapeAttrs, { x, y, width, height }, parent);
 
   if (calledElement && type === 'bpmn:CallActivity') {
-    modeling.updateProperties(shape, { calledElement });
+    setZeebeCalledElement(moddle, modeling, shape, calledElement);
   }
   if (name) modeling.updateLabel(shape, name);
 
   return { elementId: shape.id, type, name, x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+}
+
+/**
+ * Attaches (or replaces) a zeebe:TaskDefinition extension element on a task,
+ * making it a valid Zeebe job worker. Required by Camunda validation for
+ * ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask.
+ */
+function setZeebeTaskDefinition(
+  moddle: any,
+  modeling: any,
+  element: any,
+  taskType: string,
+  taskRetries?: string,
+): void {
+  const bo = element.businessObject;
+  let extElements = bo.extensionElements;
+  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
+  const taskDef = moddle.create('zeebe:TaskDefinition', { type: taskType, retries: taskRetries || '3' });
+  extElements.values.push(taskDef);
+  modeling.updateProperties(element, { extensionElements: extElements });
+}
+
+/**
+ * Attaches (or replaces) a zeebe:CalledElement extension element on a
+ * CallActivity. `modeling.updateProperties(shape, { calledElement })` sets
+ * the native bpmn:CallActivity/@calledElement attribute, which Camunda 8
+ * ignores — Zeebe resolves the target process from zeebe:CalledElement's
+ * processId instead, so that attribute alone leaves the call activity
+ * pointing nowhere despite looking configured.
+ */
+function setZeebeCalledElement(
+  moddle: any,
+  modeling: any,
+  element: any,
+  processId: string,
+): void {
+  const bo = element.businessObject;
+  let extElements = bo.extensionElements;
+  if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:CalledElement');
+  const calledElementDef = moddle.create('zeebe:CalledElement', { processId, propagateAllChildVariables: false });
+  extElements.values.push(calledElementDef);
+  modeling.updateProperties(element, { extensionElements: extElements });
+}
+
+/**
+ * Attaches (or replaces) a zeebe:Subscription extension element with a
+ * correlationKey on the bpmn:Message root element itself — NOT on the
+ * consuming Receive Task / Message Catch/Boundary Event. Confirmed via
+ * Camunda Modeler's own live linting service (injector.get('linting')):
+ * the reported node for this rule is the bpmn:Message, since the
+ * correlation key is a property of the message (reusable across every
+ * receiver), not of any one consuming element. The Message has no diagram
+ * shape, so this mutates its business object directly (same pattern as
+ * findOrCreateRootElement) rather than going through modeling.updateProperties.
+ */
+function setMessageSubscription(
+  moddle: any,
+  messageBo: any,
+  correlationKey: string,
+): void {
+  let extElements = messageBo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = messageBo;
+  }
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:Subscription');
+  const subscription = moddle.create('zeebe:Subscription', { correlationKey });
+  subscription.$parent = extElements;
+  extElements.values.push(subscription);
+  messageBo.extensionElements = extElements;
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,7 +895,6 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
   const elementId = params.elementId as string;
   const element = elementRegistry.get(elementId);
   if (!element) throw new Error(`Element "${elementId}" not found`);
-  const bo = element.businessObject;
 
   const basicProps: any = {};
   if (params.name !== undefined) basicProps.name = params.name;
@@ -622,15 +935,14 @@ function setProperties(params: Record<string, unknown>, { modeling, elementRegis
   }
 
   if (params.taskType && hasZeebe) {
-    let extElements = bo.extensionElements;
-    if (!extElements) extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
-    if (!extElements.values) extElements.values = [];
-    extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
-    const taskDef = moddle.create('zeebe:TaskDefinition', {
-      type: params.taskType as string, retries: (params.taskRetries as string) || '3',
-    });
-    extElements.values.push(taskDef);
-    modeling.updateProperties(element, { extensionElements: extElements });
+    setZeebeTaskDefinition(moddle, modeling, element, params.taskType as string, params.taskRetries as string | undefined);
+  }
+
+  if (params.correlationKey && hasZeebe) {
+    const messageBo = element.businessObject.messageRef;
+    if (messageBo) {
+      setMessageSubscription(moddle, messageBo, params.correlationKey as string);
+    }
   }
 
   return { elementId, updated: true };
@@ -849,14 +1161,72 @@ async function importXml(params: Record<string, unknown>, { injector }: BpmnServ
   return { imported: true };
 }
 
-/** Debug helper — lists available moddle packages and zeebe types */
-function debugModdle({ moddle }: BpmnServices) {
-  const packages = (moddle.packages || []).map((p: any) => ({
-    name: p.name,
-    prefix: p.prefix,
-    types: (p.types || []).map((t: any) => t.name),
-  }));
-  return { packages };
+/**
+ * Reads Camunda Modeler's own live linting service — the exact same data
+ * backing the Problems panel — instead of reimplementing Camunda's
+ * validation rules ourselves. `injector.get('linting')._reports` is an
+ * internal, undocumented field (confirmed by direct inspection, not public
+ * API), so this degrades gracefully if a future Modeler version renames or
+ * restructures it.
+ */
+async function validateDiagram(params: Record<string, unknown>, { injector }: BpmnServices) {
+  const severityFilter = (params.severity as string) || 'all';
+
+  let lintingSvc: any;
+  try {
+    lintingSvc = injector.get('linting', false);
+  } catch {
+    lintingSvc = null;
+  }
+  if (!lintingSvc) {
+    return { issues: [], count: 0, warning: 'Linting service not available in this Modeler version — cannot report validation issues.' };
+  }
+
+  // _reports is a cache that only refreshes reactively off a
+  // 'commandStack.changed' event — a bulk import_xml doesn't fire one (it
+  // bypasses the command stack entirely, unlike incremental modeling.*
+  // calls), so without a nudge _update() alone left stale reports (e.g. a
+  // false "missing start event") sitting indefinitely, until something else
+  // fired that event — clicking an element in the actual Modeler UI does it
+  // (proven live). We fire the event ourselves, but linting's own reaction to
+  // it isn't done by the time _update()'s first promise resolves — proven
+  // live that even 30ms gaps between retries weren't enough, so this backs
+  // off up to ~500ms total across a few retries before giving up and
+  // returning whatever _reports currently holds.
+  try {
+    const eventBus = injector.get('eventBus', false);
+    eventBus?.fire('commandStack.changed');
+  } catch {
+    // best-effort nudge — fall through to _update() regardless
+  }
+  const retryDelaysMs = [40, 80, 160, 220];
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    try {
+      const maybePromise = lintingSvc._update?.();
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        await maybePromise;
+      }
+    } catch {
+      // fall back to whatever _reports currently holds
+    }
+    if (attempt < retryDelaysMs.length) {
+      await new Promise<void>((r) => setTimeout(r, retryDelaysMs[attempt]));
+    }
+  }
+
+  const reports: any[] = Array.isArray(lintingSvc._reports) ? lintingSvc._reports : [];
+  const issues = reports
+    .filter((r: any) => severityFilter === 'all' || r.category === severityFilter)
+    .map((r: any) => ({
+      elementId: r.id,
+      elementName: r.name,
+      message: r.message,
+      severity: r.category,
+      rule: r.rule,
+      docsUrl: r.meta?.documentation?.url,
+    }));
+
+  return { issues, count: issues.length };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1066,7 +1436,7 @@ function addLane(
 
 function addEndEventTyped(
   params: Record<string, unknown>,
-  { modeling, canvas, moddle, elementRegistry }: BpmnServices
+  { modeling, canvas, moddle, elementRegistry, bpmnFactory }: BpmnServices
 ) {
   const eventDefType = (params.eventDefinitionType as string) || 'none';
   const name = (params.name as string) || '';
@@ -1079,8 +1449,10 @@ function addEndEventTyped(
   const shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
 
   if (eventDefType !== 'none') {
-    const eventDef = moddle.create(eventDefType, {});
     const bo = shape.businessObject;
+    const definitions = getDefinitions(bo, canvas);
+    const eventDefProps = eventDefRefProps(bpmnFactory, moddle, definitions, eventDefType, params);
+    const eventDef = moddle.create(eventDefType, eventDefProps);
     bo.eventDefinitions = bo.eventDefinitions || [];
     bo.eventDefinitions.push(eventDef);
     eventDef.$parent = bo;
@@ -1447,7 +1819,14 @@ async function batchOperations(
     }
   }
 
-  return { results };
+  let validation: Record<string, unknown>;
+  try {
+    validation = await validateDiagram({}, services);
+  } catch (err: any) {
+    validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+  }
+
+  return { results, validation };
 }
 
 /**
@@ -1526,6 +1905,46 @@ function addGroup(
   };
 }
 
+/**
+ * Sets or corrects the target Camunda 8 execution platform version on the
+ * currently open diagram's bpmn:definitions. Needed because not every
+ * diagram is created via create_model — one authored directly in Modeler and
+ * only populated via MCP tools afterward carries no version stamp from this
+ * plugin at all, and would otherwise silently keep whichever version
+ * Modeler's own "New Diagram" default assigned it.
+ */
+// KNOWN LIMITATION: this mutates the bpmn:definitions moddle object directly
+// (executionPlatform/executionPlatformVersion), and the mutation demonstrably
+// lands on the exact object bpmnjs.getDefinitions() returns — confirmed via
+// live readback — yet Modeler's exported/saved XML still shows the old
+// version. The modeler: namespace attributes appear to be owned by Camunda
+// Modeler's own app-level layer (outside bpmn-js/moddle's normal
+// property-driven XML writer), similar to how tab-switching required
+// Modeler's triggerAction API rather than direct DOM/state manipulation.
+// No Modeler-level API for this has been found yet. See issue #3 for the
+// full investigation writeup.
+function setExecutionPlatformVersion(
+  params: Record<string, unknown>,
+  { canvas }: BpmnServices
+) {
+  const version = params.version as string;
+  const platform = (params.platform as string) || 'Camunda Cloud';
+
+  const rootElement = canvas.getRootElement();
+  if (!rootElement) throw new Error('No diagram is currently open');
+
+  const definitions = rootElement.businessObject?.$parent;
+  if (!definitions) throw new Error('Could not resolve bpmn:definitions for the open diagram');
+
+  definitions.executionPlatform = platform;
+  definitions.executionPlatformVersion = version;
+
+  return {
+    executionPlatform: platform,
+    executionPlatformVersion: version,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  v0.10 — patch_element + build_process                             */
 /* ------------------------------------------------------------------ */
@@ -1544,7 +1963,7 @@ function patchElement(
   const propKeys = [
     'name', 'documentation', 'conditionExpression', 'implementationType',
     'implementationValue', 'taskTopic', 'taskPriority', 'taskType',
-    'taskRetries', 'isExecutable',
+    'taskRetries', 'correlationKey', 'isExecutable',
   ];
   const hasProps = propKeys.some(k => params[k] !== undefined);
   if (hasProps) {
@@ -1617,6 +2036,1307 @@ const DEFAULT_SPACING_X = 180;
 const DEFAULT_START_X = 200;
 const DEFAULT_Y = 200;
 
+/* ------------------------------------------------------------------ */
+/*  build_process (bpmn-auto-layout pipeline)                         */
+/* ------------------------------------------------------------------ */
+//
+// Builds a bare semantic moddle tree (no positions), merges it into the
+// current diagram's existing content, runs bpmn-auto-layout, then imports
+// the fully-laid-out result. Used when build_process is called with
+// autoLayout:true and no pool/lane/textAnnotation/group elements (those
+// aren't supported by bpmn-auto-layout yet — tracked separately — so those
+// requests keep using the original incremental-createShape + ELK path).
+
+/** Moddle-only zeebe:TaskDefinition setter — no live shape/modeling.updateProperties needed. */
+function setZeebeTaskDefinitionOnBo(
+  moddle: any,
+  bo: any,
+  taskType: string,
+  taskRetries?: string,
+): void {
+  let extElements = bo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = bo;
+  }
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:TaskDefinition');
+  const taskDef = moddle.create('zeebe:TaskDefinition', { type: taskType, retries: taskRetries || '3' });
+  taskDef.$parent = extElements;
+  extElements.values.push(taskDef);
+  bo.extensionElements = extElements;
+}
+
+/** Moddle-only zeebe:CalledElement setter — see setZeebeCalledElement's docs for why this (not the native calledElement attribute) is required. */
+function setZeebeCalledElementOnBo(
+  moddle: any,
+  bo: any,
+  processId: string,
+): void {
+  let extElements = bo.extensionElements;
+  if (!extElements) {
+    extElements = moddle.create('bpmn:ExtensionElements', { values: [] });
+    extElements.$parent = bo;
+  }
+  if (!extElements.values) extElements.values = [];
+  extElements.values = extElements.values.filter((v: any) => v.$type !== 'zeebe:CalledElement');
+  const calledElementDef = moddle.create('zeebe:CalledElement', { processId, propagateAllChildVariables: false });
+  calledElementDef.$parent = extElements;
+  extElements.values.push(calledElementDef);
+  bo.extensionElements = extElements;
+}
+
+/** True when build_process's element list contains a type bpmn-auto-layout can't lay out yet (Phase 3 territory). */
+function hasUnsupportedAutoLayoutElements(elements: any[]): boolean {
+  return elements.some((el) => el.type === 'textAnnotation' || el.type === 'group');
+}
+
+/**
+ * Builds one element's business object (no live shape) and appends it to
+ * its container's flowElements. Mirrors buildProcess's original per-type
+ * switch (modeling.createShape branch), but constructs bare moddle objects
+ * instead of live canvas shapes — bpmn-auto-layout computes all positions
+ * itself, so none of this needs x/y or a mounted shape to exist.
+ */
+function buildElementBo(
+  moddle: any,
+  bpmnFactory: any,
+  definitions: any,
+  process: any,
+  el: Record<string, unknown>,
+  boMap: Record<string, any>,
+): any {
+  const typeName = el.type as string;
+  const name = el.name as string | undefined;
+
+  // Resolve container: the parent subprocess's flowElements, or the process's.
+  let container = process;
+  if (el.parentId) {
+    const parentBo = boMap[el.parentId as string];
+    if (parentBo) container = parentBo;
+  }
+  if (!container.flowElements) container.flowElements = [];
+
+  let bo: any;
+
+  if (END_EVENT_DEFS[typeName]) {
+    bo = bpmnFactory.create('bpmn:EndEvent');
+    const defType = END_EVENT_DEFS[typeName];
+    const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, defType, (el.properties as any) || {});
+    const eventDef = moddle.create(defType, refProps);
+    eventDef.$parent = bo;
+    bo.eventDefinitions = [eventDef];
+
+  } else if (typeName === 'subprocess' || typeName === 'callActivity') {
+    bo = bpmnFactory.create(TYPE_MAP[typeName]);
+    if (el.calledElement && typeName === 'callActivity') {
+      setZeebeCalledElementOnBo(moddle, bo, el.calledElement as string);
+    }
+
+  } else if (typeName === 'boundaryEvent') {
+    const hostBo = el.attachedToId ? boMap[el.attachedToId as string] : undefined;
+    if (!hostBo) throw new Error(`BoundaryEvent "${el.id}" requires attachedToId`);
+    bo = bpmnFactory.create('bpmn:BoundaryEvent', {
+      attachedToRef: hostBo,
+      cancelActivity: el.cancelActivity !== false,
+    });
+    // A boundary event belongs to the same container as its host, not
+    // whatever parentId (if any) was given.
+    container = hostBo.$parent || process;
+    if (!container.flowElements) container.flowElements = [];
+    if (el.eventDefinitionType) {
+      const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, el.eventDefinitionType as string, (el.properties as any) || {});
+      const eventDef = moddle.create(el.eventDefinitionType as string, refProps);
+      eventDef.$parent = bo;
+      bo.eventDefinitions = [eventDef];
+      const props = el.properties as any;
+      if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && props?.correlationKey && refProps.messageRef) {
+        setMessageSubscription(moddle, refProps.messageRef, props.correlationKey);
+      }
+    }
+
+  } else if (typeName === 'startEvent' || typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
+    bo = bpmnFactory.create(TYPE_MAP[typeName]);
+    if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
+      const refProps = eventDefRefProps(bpmnFactory, moddle, definitions, el.eventDefinitionType as string, (el.properties as any) || {});
+      const eventDef = moddle.create(el.eventDefinitionType as string, refProps);
+      eventDef.$parent = bo;
+      bo.eventDefinitions = [eventDef];
+      const props = el.properties as any;
+      if (
+        el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
+        typeName === 'intermediateCatchEvent' &&
+        props?.correlationKey &&
+        refProps.messageRef
+      ) {
+        setMessageSubscription(moddle, refProps.messageRef, props.correlationKey);
+      }
+    }
+
+  } else {
+    const bpmnType = TYPE_MAP[typeName];
+    if (!bpmnType) throw new Error(`Unknown element type "${typeName}"`);
+    bo = bpmnFactory.create(bpmnType);
+  }
+
+  if (name) bo.name = name;
+
+  const properties = el.properties as any;
+  if (properties) {
+    if (properties.documentation) {
+      const doc = moddle.create('bpmn:Documentation', { text: properties.documentation });
+      doc.$parent = bo;
+      bo.documentation = [doc];
+    }
+    if (properties.conditionExpression) {
+      const expr = moddle.create('bpmn:FormalExpression', { body: properties.conditionExpression });
+      expr.$parent = bo;
+      bo.conditionExpression = expr;
+    }
+    if (properties.isExecutable !== undefined) bo.isExecutable = properties.isExecutable;
+    if (properties.messageRef && (bo.$type === 'bpmn:ReceiveTask' || bo.$type === 'bpmn:SendTask')) {
+      bo.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', properties.messageRef);
+    }
+    if (properties.correlationKey && bo.$type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe') && bo.messageRef) {
+      setMessageSubscription(moddle, bo.messageRef, properties.correlationKey);
+    }
+    if (properties.taskType && moddle.getPackage('zeebe')) {
+      setZeebeTaskDefinitionOnBo(moddle, bo, properties.taskType, properties.taskRetries);
+    }
+  }
+
+  bo.$parent = container;
+  container.flowElements.push(bo);
+  return bo;
+}
+
+/** Builds one sequence flow's business object, wiring source/target incoming/outgoing. */
+function buildFlowBo(
+  moddle: any,
+  bpmnFactory: any,
+  sourceBo: any,
+  targetBo: any,
+  flow: Record<string, unknown>,
+): any {
+  const container = sourceBo.$parent;
+  if (!container.flowElements) container.flowElements = [];
+
+  const flowBo = bpmnFactory.create('bpmn:SequenceFlow', { sourceRef: sourceBo, targetRef: targetBo });
+  flowBo.$parent = container;
+  container.flowElements.push(flowBo);
+
+  if (!sourceBo.outgoing) sourceBo.outgoing = [];
+  sourceBo.outgoing.push(flowBo);
+  if (!targetBo.incoming) targetBo.incoming = [];
+  targetBo.incoming.push(flowBo);
+
+  if (flow.name) flowBo.name = flow.name;
+  if (flow.conditionExpression) {
+    const expr = moddle.create('bpmn:FormalExpression', { body: flow.conditionExpression });
+    expr.$parent = flowBo;
+    flowBo.conditionExpression = expr;
+  }
+  if (flow.isDefault) sourceBo.default = flowBo;
+
+  return flowBo;
+}
+
+/**
+ * Seeds an `isExpanded="true"` DI stub for each given subprocess id — the
+ * only documented way to get bpmn-auto-layout to render a subprocess
+ * expanded instead of its default collapsed state. Always builds a fresh
+ * diagram/plane rather than reusing whatever the input XML already had —
+ * any diagram that's already been laid out once (built before, or reloaded
+ * from a saved file) has REAL DI for these same elements already, using
+ * Camunda's own `<id>_di` convention. Confirmed live that pushing our stub
+ * shape alongside an existing one produces a document with two
+ * `bpmndi:BPMNShape` elements sharing the identical `id`, which
+ * bpmn-auto-layout's internal re-parse can't handle (observed: it silently
+ * produced an almost-empty result, wiping a 29-element diagram down to just
+ * its bpmn:Process on import). Since bpmn-auto-layout recomputes every
+ * position from scratch regardless of what DI it's given (labels aside, it
+ * never preserves input bounds/waypoints), discarding existing DI costs
+ * nothing.
+ */
+function seedExpandedHints(
+  moddle: any,
+  definitions: any,
+  process: any,
+  expandedBos: any[],
+): void {
+  if (expandedBos.length === 0) return;
+
+  const plane = moddle.create('bpmndi:BPMNPlane', { bpmnElement: process, planeElement: [] });
+  const diagram = moddle.create('bpmndi:BPMNDiagram', { plane });
+  plane.$parent = diagram;
+  diagram.$parent = definitions;
+  definitions.diagrams = [diagram];
+
+  for (const bo of expandedBos) {
+    const bounds = moddle.create('dc:Bounds', { x: 0, y: 0, width: 100, height: 80 });
+    // bpmn-auto-layout's own re-parse of this XML only picks up the
+    // isExpanded hint via elementsById (see setExpandedPropertyToModdleElements
+    // in its source) — that map is keyed by the `id` attribute, so a stub
+    // shape without one is silently invisible to it despite being otherwise
+    // well-formed. Matches Camunda Modeler's own "<id>_di" DI-id convention.
+    const shape = moddle.create('bpmndi:BPMNShape', { id: `${bo.id}_di`, bpmnElement: bo, isExpanded: true, bounds });
+    bounds.$parent = shape;
+    shape.$parent = plane;
+    plane.planeElement.push(shape);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Phase 2 — post-processing pass (dedup, crossing router, labels)   */
+/* ------------------------------------------------------------------ */
+//
+// bpmn-auto-layout's raw output has two known rough edges: (1) it can place
+// several edges' segments exactly on top of each other for part of their
+// route (e.g. two flows leaving the same gateway anchor and running
+// parallel before diverging — confirmed live on the 29-element fixture:
+// f3/f4 both ran the full length (225,95)->(225,280) collinear), and (2) it
+// emits zero <bpmndi:BPMNLabel> elements at all, so bpmn-js falls back to
+// its own default label placement at render time — which is what produced
+// the confirmed mid-word wraps and label/line overlaps seen in live
+// testing. These three passes run in this fixed order on the parsed DI,
+// before import: dedup first (the router's segment math needs non-degenerate
+// segments), router before labels (label collision-avoidance needs the
+// final waypoints, not the pre-router ones).
+
+const WAYPOINT_DEDUP_EPSILON = 0.5;
+const CROSSING_LANE_SPACING = 20;
+const LABEL_FONT_SIZE = 12;
+const LABEL_LINE_HEIGHT = 14;
+const LABEL_MAX_WIDTH = 100;
+// New convention (BPMN-BEST-PRACTICES.md doesn't yet document a label/line
+// clearance value — this establishes one rather than inventing an ad-hoc
+// number silently).
+const LABEL_CLEARANCE = 6;
+
+/** Drops near-duplicate consecutive waypoints (within ~0.5px) — a duplicate point renders as a corner-rounding glitch/spike, and is degenerate input to the router below. */
+export function dedupEdgeWaypoints(edges: any[]): void {
+  for (const edge of edges) {
+    const pts: any[] = edge.waypoint;
+    if (!pts || pts.length <= 2) continue;
+    const deduped = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const prev = deduped[deduped.length - 1];
+      if (Math.abs(pts[i].x - prev.x) < WAYPOINT_DEDUP_EPSILON && Math.abs(pts[i].y - prev.y) < WAYPOINT_DEDUP_EPSILON) {
+        continue;
+      }
+      deduped.push(pts[i]);
+    }
+    if (deduped.length >= 2) edge.waypoint = deduped;
+  }
+}
+
+interface SegRef { edge: any; index: number; }
+interface ConflictGroup { axis: 'x' | 'y'; segs: SegRef[]; }
+
+function range1d(a: number, b: number): [number, number] {
+  return a <= b ? [a, b] : [b, a];
+}
+
+function anyPairOverlaps(segs: SegRef[], rangeAxis: 'x' | 'y'): boolean {
+  const ranges = segs.map((s) => {
+    const pts = s.edge.waypoint;
+    return range1d(pts[s.index][rangeAxis], pts[s.index + 1][rangeAxis]);
+  });
+  for (let i = 0; i < ranges.length; i++) {
+    for (let j = i + 1; j < ranges.length; j++) {
+      if (Math.max(ranges[i][0], ranges[j][0]) < Math.min(ranges[i][1], ranges[j][1])) return true;
+    }
+  }
+  return false;
+}
+
+/** Finds groups of same-axis, same-coordinate, range-overlapping segments belonging to 2+ different edges. */
+export function findConflictGroups(edges: any[]): ConflictGroup[] {
+  const vGroups = new Map<number, SegRef[]>();
+  const hGroups = new Map<number, SegRef[]>();
+
+  for (const edge of edges) {
+    const pts: any[] = edge.waypoint;
+    if (!pts) continue;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
+      if (dx < WAYPOINT_DEDUP_EPSILON && dy >= WAYPOINT_DEDUP_EPSILON) {
+        const key = Math.round(a.x);
+        if (!vGroups.has(key)) vGroups.set(key, []);
+        vGroups.get(key)!.push({ edge, index: i });
+      } else if (dy < WAYPOINT_DEDUP_EPSILON && dx >= WAYPOINT_DEDUP_EPSILON) {
+        const key = Math.round(a.y);
+        if (!hGroups.has(key)) hGroups.set(key, []);
+        hGroups.get(key)!.push({ edge, index: i });
+      }
+    }
+  }
+
+  const result: ConflictGroup[] = [];
+  for (const segs of vGroups.values()) {
+    if (new Set(segs.map((s) => s.edge)).size < 2) continue;
+    if (!anyPairOverlaps(segs, 'y')) continue;
+    result.push({ axis: 'x', segs });
+  }
+  for (const segs of hGroups.values()) {
+    if (new Set(segs.map((s) => s.edge)).size < 2) continue;
+    if (!anyPairOverlaps(segs, 'x')) continue;
+    result.push({ axis: 'y', segs });
+  }
+  return result;
+}
+
+/**
+ * Shifts one conflicting segment by `offset` on its perpendicular axis
+ * (`perp`). If the segment touches the edge's real source/target dock point
+ * (waypoint[0] or the last waypoint — the actual connection to the shape),
+ * that point is never moved; instead a short jog is inserted next to it so
+ * the path detours into its new lane and back, keeping every segment
+ * orthogonal and every dock connection exactly where it was.
+ */
+/**
+ * Shifts one conflicting segment by `offset` on its perpendicular axis
+ * (`perp`) — but only when BOTH endpoints are interior elbow points. A
+ * segment touching the edge's real source/target dock point is left
+ * untouched: resolving that case requires inserting a jog right next to the
+ * dock, which live user testing confirmed reads as a rendering glitch (an
+ * odd little hook right at the shape) rather than intentional routing, even
+ * after widening the jog distance — worse than the overlap it was meant to
+ * fix. Two flows briefly overlapping right at a shared gateway exit before
+ * diverging is normal, broadly-accepted BPMN notation; left alone here by
+ * deliberate choice, not an oversight.
+ */
+function shiftSegment(edge: any, i: number, perp: 'x' | 'y', offset: number): void {
+  if (Math.abs(offset) < 0.01) return;
+  const pts: any[] = edge.waypoint;
+  const j = i + 1;
+  if (i === 0 || j === pts.length - 1) return;
+  pts[i][perp] += offset;
+  pts[j][perp] += offset;
+}
+
+function applyGroupOffsets(group: ConflictGroup): void {
+  const uniqueEdges = Array.from(new Set(group.segs.map((s) => s.edge)))
+    .sort((a, b) => String(a.bpmnElement.id).localeCompare(String(b.bpmnElement.id)));
+  const n = uniqueEdges.length;
+  const offsetByEdge = new Map<any, number>();
+  uniqueEdges.forEach((edge, k) => offsetByEdge.set(edge, (k - (n - 1) / 2) * CROSSING_LANE_SPACING));
+
+  for (const seg of group.segs) {
+    const offset = offsetByEdge.get(seg.edge)!;
+    shiftSegment(seg.edge, seg.index, group.axis, offset);
+  }
+}
+
+/**
+ * Best-effort resolution of same-axis overlapping/coincident INTERIOR
+ * segments (both endpoints are elbow points, neither is a real dock
+ * connection) belonging to different edges — a clean, artifact-free parallel
+ * offset, no new corners needed.
+ *
+ * Deliberately does NOT touch dock-anchored conflicts (a segment touching an
+ * edge's actual source/target connection point) — live user testing
+ * confirmed that inserting a jog next to a shared dock point reads as a
+ * rendering glitch (an odd little hook right at the shape), even after
+ * widening it, worse than the overlap it was meant to fix. Two flows briefly
+ * overlapping right at a shared gateway exit before diverging is normal,
+ * broadly-accepted BPMN notation — left alone by deliberate choice.
+ *
+ * Also does not attempt to resolve true perpendicular crossings — a much
+ * harder routing problem, and not what was actually observed.
+ */
+export function routeAwayOverlaps(edges: any[]): void {
+  const groups = findConflictGroups(edges);
+  const mutated = new Set<any>();
+  for (const group of groups) {
+    const segs = group.segs.filter((s) => !mutated.has(s.edge));
+    if (new Set(segs.map((s) => s.edge)).size < 2) continue;
+    applyGroupOffsets({ axis: group.axis, segs });
+    for (const s of segs) mutated.add(s.edge);
+  }
+}
+
+/** Real Canvas text measurement in the renderer; a deterministic per-character estimate when no `document` exists (vitest's default Node environment) — same font-size assumption either way, just not pixel-exact in tests. */
+function measureTextWidth(text: string, fontSize: number): number {
+  if (typeof document === 'undefined') return text.length * fontSize * 0.55;
+  const w = measureTextWidth as any;
+  if (!w._canvas) w._canvas = document.createElement('canvas');
+  const ctx = w._canvas.getContext('2d');
+  ctx.font = `${fontSize}px Arial, sans-serif`;
+  return ctx.measureText(text).width;
+}
+
+/** Wraps text to maxWidth using real measured widths, breaking only at word boundaries — the previous character-count heuristic was the confirmed root cause of mid-word wraps. */
+export function wrapLabelText(text: string, maxWidth: number, fontSize: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
+  const lines: string[] = [];
+  let current = words[0];
+  for (let i = 1; i < words.length; i++) {
+    const candidate = `${current} ${words[i]}`;
+    if (measureTextWidth(candidate, fontSize) <= maxWidth) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = words[i];
+    }
+  }
+  lines.push(current);
+  return lines;
+}
+
+function labelRectFor(lines: string[], centerX: number, top: number): Rect {
+  const width = Math.min(LABEL_MAX_WIDTH, Math.max(...lines.map((l) => measureTextWidth(l, LABEL_FONT_SIZE))) + 4);
+  const height = lines.length * LABEL_LINE_HEIGHT;
+  return { x: centerX - width / 2, y: top, width, height };
+}
+
+/** Picks the first candidate rect that doesn't intersect any edge segment; falls back to the first (default) candidate if none are clear — best-effort, not exhaustive search. */
+function pickClearRect(candidates: Rect[], edges: any[], extraObstacles: Rect[] = []): Rect {
+  for (const rect of candidates) {
+    let hits = extraObstacles.some((o) => rectsOverlap(rect, o));
+    for (const edge of edges) {
+      if (hits) break;
+      const pts: any[] = edge.waypoint;
+      for (let i = 0; i < pts.length - 1 && !hits; i++) {
+        if (segmentIntersectsRect(pts[i], pts[i + 1], rect, 0)) hits = true;
+      }
+    }
+    if (!hits) return rect;
+  }
+  return candidates[0];
+}
+
+const EXTERNAL_LABEL_TYPES = /Event$|Gateway$/;
+
+type Side = 'top' | 'bottom' | 'left' | 'right';
+const SIDE_PREFERENCE: Side[] = ['bottom', 'top', 'right', 'left'];
+
+function sideFromDelta(dx: number, dy: number): Side {
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+  return dy > 0 ? 'bottom' : 'top';
+}
+
+/** Which cardinal sides of a shape already have a connected edge touching them. */
+function getTakenSides(shapeId: string, edges: any[]): Set<Side> {
+  const taken = new Set<Side>();
+  for (const edge of edges) {
+    const bo = edge.bpmnElement;
+    const pts: any[] = edge.waypoint;
+    if (!pts || pts.length < 2) continue;
+    if (bo.sourceRef?.id === shapeId) {
+      taken.add(sideFromDelta(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+    }
+    if (bo.targetRef?.id === shapeId) {
+      const n = pts.length;
+      taken.add(sideFromDelta(pts[n - 2].x - pts[n - 1].x, pts[n - 2].y - pts[n - 1].y));
+    }
+  }
+  return taken;
+}
+
+/** For a boundary event, the side facing its host shape — that side isn't "taken" by a connector, but placing a label there lands it inside/overlapping the host box, which is just as wrong. */
+function hostFacingSide(shape: any, shapes: any[]): Side | undefined {
+  const hostRef = shape.bpmnElement.attachedToRef;
+  if (!hostRef) return undefined;
+  const host = shapes.find((s: any) => s.bpmnElement.id === hostRef.id);
+  if (!host) return undefined;
+  const b = shape.bounds, h = host.bounds;
+  const shapeMidX = b.x + b.width / 2, shapeMidY = b.y + b.height / 2;
+  const hostMidX = h.x + h.width / 2, hostMidY = h.y + h.height / 2;
+  return sideFromDelta(hostMidX - shapeMidX, hostMidY - shapeMidY);
+}
+
+/** First side (in preference order) with no connected edge and no host shape in the way; falls back to the preferred default if every side is unusable — best-effort, not silently broken. */
+function pickLabelSide(shapeId: string, edges: any[], excludeSide?: Side): Side {
+  const taken = getTakenSides(shapeId, edges);
+  if (excludeSide) taken.add(excludeSide);
+  for (const side of SIDE_PREFERENCE) {
+    if (!taken.has(side)) return side;
+  }
+  return SIDE_PREFERENCE[0];
+}
+
+function labelRectForSide(side: Side, b: Rect, lines: string[]): Rect {
+  const width = Math.min(LABEL_MAX_WIDTH, Math.max(...lines.map((l) => measureTextWidth(l, LABEL_FONT_SIZE))) + 4);
+  const height = lines.length * LABEL_LINE_HEIGHT;
+  switch (side) {
+    case 'bottom': return { x: b.x + b.width / 2 - width / 2, y: b.y + b.height + LABEL_CLEARANCE, width, height };
+    case 'top': return { x: b.x + b.width / 2 - width / 2, y: b.y - LABEL_CLEARANCE - height, width, height };
+    case 'right': return { x: b.x + b.width + LABEL_CLEARANCE, y: b.y + b.height / 2 - height / 2, width, height };
+    case 'left': return { x: b.x - LABEL_CLEARANCE - width, y: b.y + b.height / 2 - height / 2, width, height };
+  }
+}
+
+/** Secondary nudge candidates along the chosen side, for a final micro-adjustment if the primary position still collides with something. */
+function nudgeCandidates(base: Rect, side: Side): Rect[] {
+  if (side === 'bottom' || side === 'top') {
+    return [base, { ...base, x: base.x - base.width - LABEL_CLEARANCE }, { ...base, x: base.x + base.width + LABEL_CLEARANCE }];
+  }
+  return [base, { ...base, y: base.y - base.height - LABEL_CLEARANCE }, { ...base, y: base.y + base.height + LABEL_CLEARANCE }];
+}
+
+/** Index of the longest segment in an edge's waypoints — used as the representative segment for label placement so a tiny stub/jog segment is never picked over a genuinely long, visually central one. */
+function longestSegmentIndex(pts: any[]): number {
+  let bestIdx = 0, bestLen = -1;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const len = Math.abs(pts[i].x - pts[i + 1].x) + Math.abs(pts[i].y - pts[i + 1].y);
+    if (len > bestLen) { bestLen = len; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+/**
+ * Authors `bpmndi:BPMNLabel` elements from scratch — bpmn-auto-layout emits
+ * none at all, so without this bpmn-js falls back to its own default
+ * placement, which produced the confirmed mid-word wraps and label/line
+ * overlaps. Task-family shapes render their name inline within the shape
+ * bounds by default and are deliberately left alone here.
+ */
+export function authorLabels(shapes: any[], edges: any[], moddle: any): void {
+  for (const shape of shapes) {
+    const bo = shape.bpmnElement;
+    if (!bo?.name || !EXTERNAL_LABEL_TYPES.test(bo.$type)) continue;
+    const b = shape.bounds;
+    const lines = wrapLabelText(bo.name, LABEL_MAX_WIDTH, LABEL_FONT_SIZE);
+    const host = bo.attachedToRef ? shapes.find((s: any) => s.bpmnElement.id === bo.attachedToRef.id) : undefined;
+    const side = pickLabelSide(bo.id, edges, hostFacingSide(shape, shapes));
+    const base = labelRectForSide(side, b, lines);
+    const rect = pickClearRect(nudgeCandidates(base, side), edges, host ? [{ x: host.bounds.x, y: host.bounds.y, width: host.bounds.width, height: host.bounds.height }] : []);
+
+    const bounds = moddle.create('dc:Bounds', rect);
+    const label = moddle.create('bpmndi:BPMNLabel', { bounds });
+    bounds.$parent = label;
+    label.$parent = shape;
+    shape.label = label;
+  }
+
+  for (const edge of edges) {
+    const bo = edge.bpmnElement;
+    if (!bo?.name) continue;
+    const pts: any[] = edge.waypoint;
+    const mid = longestSegmentIndex(pts);
+    const a = pts[mid], b = pts[mid + 1];
+    const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+    const horizontal = Math.abs(a.y - b.y) < WAYPOINT_DEDUP_EPSILON;
+
+    const lines = wrapLabelText(bo.name, LABEL_MAX_WIDTH, LABEL_FONT_SIZE);
+    let base: Rect;
+    let candidates: Rect[];
+    if (horizontal) {
+      base = labelRectFor(lines, midX, midY - LABEL_CLEARANCE - lines.length * LABEL_LINE_HEIGHT);
+      candidates = [base, { ...base, y: midY + LABEL_CLEARANCE }];
+    } else {
+      base = labelRectFor(lines, midX + LABEL_CLEARANCE + Math.max(...lines.map((l) => measureTextWidth(l, LABEL_FONT_SIZE))) / 2, midY - (lines.length * LABEL_LINE_HEIGHT) / 2);
+      candidates = [base, { ...base, x: base.x - 2 * (base.x - midX) - base.width }];
+    }
+    const rect = pickClearRect(candidates, edges);
+
+    const bounds = moddle.create('dc:Bounds', rect);
+    const label = moddle.create('bpmndi:BPMNLabel', { bounds });
+    bounds.$parent = label;
+    label.$parent = edge;
+    edge.label = label;
+  }
+}
+
+/** Runs the full Phase 2 pass on parsed (post-layoutProcess) DI, in the required order. */
+export function postProcessLayout(shapes: any[], edges: any[], moddle: any): void {
+  dedupEdgeWaypoints(edges);
+  routeAwayOverlaps(edges);
+  authorLabels(shapes, edges, moddle);
+}
+
+/** Parses layoutProcess's raw XML, runs the Phase 2 pass, and re-serializes — shared by both call sites. */
+async function applyPostProcessing(rawLaidOutXml: string, moddle: any): Promise<string> {
+  const { rootElement: laidOutDefs } = await moddle.fromXML(rawLaidOutXml);
+  const planeElements: any[] = laidOutDefs.diagrams?.[0]?.plane?.planeElement || [];
+  const shapes = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape');
+  const edges = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge');
+  postProcessLayout(shapes, edges, moddle);
+  const { xml } = await moddle.toXML(laidOutDefs, { format: false });
+  return xml;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Phase 3 — pool/lane/annotation/group composition layer            */
+/* ------------------------------------------------------------------ */
+//
+// bpmn-auto-layout can't touch collaborations, lanes, annotations, or
+// groups at all (confirmed by reading its source — getProcess() is a
+// first-bpmn:Process-only lookup, laneSets/artifacts are never referenced).
+// This layer works around that by never handing it anything it can't
+// support: extract everything it doesn't understand, lay out each
+// participant's flow-node core independently (the thing it's actually
+// good at), then reassemble the pool/lane/annotation/group structure
+// around the result using plain bbox math and live modeling.* calls —
+// no attempt to re-route edges or shift individual nodes to resolve lane
+// conflicts, since that's a much harder problem than this layer needs to
+// solve (see the interleaving note below).
+
+interface ParticipantCore {
+  participantId: string | null; // null when there's no bpmn:Collaboration wrapper
+  participantName?: string;
+  processBo: any;
+  laneInfos: { id: string; name?: string; memberIds: string[] }[];
+}
+
+interface ExtractedComposition {
+  hadCollaboration: boolean;
+  collaborationId?: string;
+  participants: ParticipantCore[];
+  messageFlows: { id: string; name?: string; sourceId: string; targetId: string }[];
+  annotations: { id: string; text: string; x: number; y: number; width: number; height: number; associatedIds: string[] }[];
+  groups: { id: string; name?: string; x: number; y: number; width: number; height: number }[];
+}
+
+/**
+ * Pulls every collaboration/lane/annotation/group/message-flow out of a
+ * parsed diagram, leaving each participant's `processBo` holding only its
+ * flow nodes and sequence flows — the one thing `layoutProcess` can
+ * actually handle. Lane membership is read directly from each `bpmn:Lane`'s
+ * existing `flowNodeRef` array (already the authoritative membership list —
+ * no need to infer it from geometry).
+ */
+export function extractComposition(definitions: any): ExtractedComposition {
+  const collaboration = definitions.rootElements?.find((el: any) => el.$type === 'bpmn:Collaboration') || null;
+  const participants: ParticipantCore[] = [];
+  const messageFlows: ExtractedComposition['messageFlows'] = [];
+  const annotations: ExtractedComposition['annotations'] = [];
+  const groups: ExtractedComposition['groups'] = [];
+
+  const plane = definitions.diagrams?.[0]?.plane;
+  const shapeById = new Map<string, any>();
+  for (const pe of plane?.planeElement || []) {
+    if (pe.$type === 'bpmndi:BPMNShape' && pe.bpmnElement) shapeById.set(pe.bpmnElement.id, pe);
+  }
+
+  const sources = collaboration
+    ? collaboration.participants.map((p: any) => ({ participantBo: p, processBo: p.processRef }))
+    : [{ participantBo: null, processBo: definitions.rootElements.find((el: any) => el.$type === 'bpmn:Process') }];
+
+  const collectArtifact = (fe: any) => {
+    if (fe.$type === 'bpmn:TextAnnotation') {
+      const shape = shapeById.get(fe.id);
+      annotations.push({
+        id: fe.id, text: fe.text || '',
+        x: shape?.bounds?.x ?? 100, y: shape?.bounds?.y ?? 100,
+        width: shape?.bounds?.width ?? 100, height: shape?.bounds?.height ?? 80,
+        associatedIds: [],
+      });
+      return true;
+    }
+    if (fe.$type === 'bpmn:Group') {
+      const shape = shapeById.get(fe.id);
+      groups.push({
+        id: fe.id, name: fe.categoryValueRef?.value,
+        x: shape?.bounds?.x ?? 100, y: shape?.bounds?.y ?? 100,
+        width: shape?.bounds?.width ?? 300, height: shape?.bounds?.height ?? 200,
+      });
+      return true;
+    }
+    if (fe.$type === 'bpmn:Association') {
+      const sourceId = fe.sourceRef?.id, targetId = fe.targetRef?.id;
+      const ann = annotations.find((a) => a.id === sourceId || a.id === targetId);
+      if (ann) {
+        const otherId = ann.id === sourceId ? targetId : sourceId;
+        if (otherId) ann.associatedIds.push(otherId);
+      }
+      return true;
+    }
+    return false;
+  };
+
+  for (const { participantBo, processBo } of sources) {
+    if (!processBo) continue;
+
+    const laneInfos: ParticipantCore['laneInfos'] = [];
+    for (const laneSet of processBo.laneSets || []) {
+      for (const lane of laneSet.lanes || []) {
+        laneInfos.push({ id: lane.id, name: lane.name, memberIds: (lane.flowNodeRef || []).map((ref: any) => ref.id) });
+      }
+    }
+
+    const kept: any[] = [];
+    for (const fe of processBo.flowElements || []) {
+      if (!collectArtifact(fe)) kept.push(fe);
+    }
+    processBo.flowElements = kept;
+    processBo.laneSets = [];
+
+    participants.push({ participantId: participantBo?.id ?? null, participantName: participantBo?.name, processBo, laneInfos });
+  }
+
+  for (const mf of collaboration?.messageFlows || []) {
+    messageFlows.push({ id: mf.id, name: mf.name, sourceId: mf.sourceRef?.id, targetId: mf.targetRef?.id });
+  }
+  for (const art of collaboration?.artifacts || []) collectArtifact(art);
+
+  return { hadCollaboration: !!collaboration, collaborationId: collaboration?.id, participants, messageFlows, annotations, groups };
+}
+
+/**
+ * Bounding box across shapes AND their labels (when present) — confirmed
+ * live that using shape bounds alone let a centered label on an edge
+ * element (e.g. a start event right at a lane's left boundary) overhang
+ * past the lane/pool padding computed from that too-tight box, squashing
+ * the label against the lane border. Every caller (lane member bboxes, pool
+ * content bboxes) wants the true visual extent, not just the shape geometry.
+ */
+export function bboxOfShapes(shapes: any[]): Rect {
+  const rects: Rect[] = [];
+  for (const s of shapes) {
+    rects.push(s.bounds);
+    if (s.label?.bounds) rects.push(s.label.bounds);
+  }
+  const x1 = Math.min(...rects.map((r) => r.x));
+  const y1 = Math.min(...rects.map((r) => r.y));
+  const x2 = Math.max(...rects.map((r) => r.x + r.width));
+  const y2 = Math.max(...rects.map((r) => r.y + r.height));
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+/** Pure translation — always safe (preserves every segment's orthogonality and every shape's size) unlike shifting nodes relative to each other. */
+function translateShapesAndEdges(shapes: any[], edges: any[], dx: number, dy: number): void {
+  for (const s of shapes) {
+    s.bounds.x += dx; s.bounds.y += dy;
+    if (s.label?.bounds) { s.label.bounds.x += dx; s.label.bounds.y += dy; }
+  }
+  for (const e of edges) {
+    for (const p of e.waypoint) { p.x += dx; p.y += dy; }
+    if (e.label?.bounds) { e.label.bounds.x += dx; e.label.bounds.y += dy; }
+  }
+}
+
+const POOL_PADDING = 30;
+const POOL_LABEL_BAND = 30;
+const LANE_PADDING = 20;
+const STACK_GAP = 60;
+
+/**
+ * Lays out each participant's flow-node core independently via the normal
+ * Phase 1 + Phase 2 pipeline, stacks the results vertically (pure
+ * translation per participant — never touches individual node positions
+ * relative to each other, so orthogonality and validity are guaranteed),
+ * and rebuilds pool/lane DI around the translated positions.
+ *
+ * Lane bounds are computed from each lane's actual post-layout member
+ * positions and stacked in declaration order. `layoutProcess` has zero lane
+ * awareness, so it can legitimately interleave two lanes' members in Y —
+ * when that happens, a clean non-overlapping stack isn't achievable without
+ * either re-routing edges or moving nodes independently of the graph
+ * layout, both of which risk corrupting a result that's otherwise fully
+ * correct. Rather than attempt that, this detects the conflict, still draws
+ * each lane's bounds around its own members (bands may overlap in that
+ * case), and reports it via `warnings` — mirrors `validateLayout`'s
+ * existing "detect and report" philosophy for `subprocess_too_small`.
+ *
+ * Message flows, annotations, groups, and associations are deliberately
+ * NOT rebuilt here — they get reapplied after import via the existing live
+ * `addMessageFlow`/`addAnnotation`/`addGroup` modeling calls, which compute
+ * their own correct DI, rather than hand-building connection routing here.
+ */
+interface LaneBand {
+  memberIds: string[];
+  y: number;
+  height: number;
+}
+
+export async function composePoolsAndLanes(
+  extracted: ExtractedComposition,
+  services: BpmnServices,
+): Promise<{ xml: string; warnings: string[]; laneBands: LaneBand[] }> {
+  const { moddle, elementRegistry } = services;
+  const warnings: string[] = [];
+  const laneBands: LaneBand[] = [];
+
+  const definitions = moddle.create('bpmn:Definitions', {
+    id: 'Definitions_composed', targetNamespace: 'http://bpmn.io/schema/bpmn', rootElements: [],
+  });
+
+  let collaboration: any = null;
+  if (extracted.hadCollaboration) {
+    collaboration = moddle.create('bpmn:Collaboration', { id: extracted.collaborationId || 'Collaboration_composed', participants: [], messageFlows: [] });
+    collaboration.$parent = definitions;
+    definitions.rootElements.push(collaboration);
+  }
+
+  const plane = moddle.create('bpmndi:BPMNPlane', { planeElement: [] });
+  const diagram = moddle.create('bpmndi:BPMNDiagram', { plane });
+  plane.$parent = diagram;
+  diagram.$parent = definitions;
+  definitions.diagrams = [diagram];
+
+  const allExpandedIds = collectExpandedSubprocessIds(elementRegistry);
+  let stackY = 0;
+  let firstLaidOutProcess: any = null;
+
+  for (const participant of extracted.participants) {
+    const tempDefs = moddle.create('bpmn:Definitions', { id: `Definitions_tmp_${participant.processBo.id}`, targetNamespace: 'http://bpmn.io/schema/bpmn', rootElements: [participant.processBo] });
+    participant.processBo.$parent = tempDefs;
+
+    const expandedBos: any[] = [];
+    for (const id of allExpandedIds) {
+      const bo = findFlowElementById(participant.processBo, id);
+      if (bo) expandedBos.push(bo);
+    }
+    seedExpandedHints(moddle, tempDefs, participant.processBo, expandedBos);
+
+    const { xml: tempXml } = await moddle.toXML(tempDefs, { format: false });
+    const rawLaidOutXml = await layoutProcess(tempXml);
+    const postXml = await applyPostProcessing(rawLaidOutXml, moddle);
+    const { rootElement: laidOutDefs } = await moddle.fromXML(postXml);
+    const laidOutProcess = laidOutDefs.rootElements.find((el: any) => el.$type === 'bpmn:Process');
+    const laidOutPlaneElements: any[] = laidOutDefs.diagrams[0].plane.planeElement;
+    const shapes = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape');
+    const edges = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge');
+
+    if (!firstLaidOutProcess) firstLaidOutProcess = laidOutProcess;
+
+    const bbox = bboxOfShapes(shapes);
+    const marginX = POOL_PADDING + (extracted.hadCollaboration ? POOL_LABEL_BAND : 0);
+    const dx = -bbox.x + marginX;
+    const dy = -bbox.y + stackY + POOL_PADDING;
+    translateShapesAndEdges(shapes, edges, dx, dy);
+    for (const s of shapes) plane.planeElement.push(s);
+    for (const e of edges) plane.planeElement.push(e);
+    const contentRect: Rect = { x: bbox.x + dx, y: bbox.y + dy, width: bbox.width, height: bbox.height };
+
+    const shapeById = new Map<string, any>(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    let contentBottom = contentRect.y + contentRect.height + POOL_PADDING;
+
+    if (participant.laneInfos.length > 0) {
+      const laneSet = moddle.create('bpmn:LaneSet', { id: `LaneSet_${participant.processBo.id}`, lanes: [] });
+      laneSet.$parent = laidOutProcess;
+      laidOutProcess.laneSets = [laneSet];
+
+      const laneEntries = participant.laneInfos.map((laneInfo) => {
+        const memberShapes = laneInfo.memberIds.map((id) => shapeById.get(id)).filter(Boolean);
+        const rect = memberShapes.length > 0 ? bboxOfShapes(memberShapes) : { x: contentRect.x, y: contentRect.y, width: contentRect.width, height: 80 };
+        const memberBos = laneInfo.memberIds.map((id) => findFlowElementById(laidOutProcess, id)).filter(Boolean);
+        return { laneInfo, rect, memberBos };
+      });
+
+      let interleaved = false;
+      for (let i = 1; i < laneEntries.length; i++) {
+        if (laneEntries[i].rect.y < laneEntries[i - 1].rect.y + laneEntries[i - 1].rect.height) { interleaved = true; break; }
+      }
+      if (interleaved) {
+        warnings.push(
+          `Lanes in participant "${participant.participantName || participant.participantId || participant.processBo.id}" were interleaved by bpmn-auto-layout's lane-unaware layout and have been repositioned into their correct bands (moving the affected elements and re-routing their connections); worth a visual check since it's a best-effort correction, not a lane-aware re-layout.`,
+        );
+      }
+
+      const laneMinX = contentRect.x - LANE_PADDING;
+      const laneWidth = contentRect.width + LANE_PADDING * 2;
+      let laneY = contentRect.y - LANE_PADDING;
+      for (const { laneInfo, rect, memberBos } of laneEntries) {
+        const lane = moddle.create('bpmn:Lane', { id: laneInfo.id, name: laneInfo.name, flowNodeRef: memberBos });
+        lane.$parent = laneSet;
+        laneSet.lanes.push(lane);
+        const laneHeight = rect.height + LANE_PADDING * 2;
+        const laneBounds = moddle.create('dc:Bounds', { x: laneMinX, y: laneY, width: laneWidth, height: laneHeight });
+        const laneShape = moddle.create('bpmndi:BPMNShape', { id: `${lane.id}_di`, bpmnElement: lane, bounds: laneBounds, isHorizontal: true });
+        laneBounds.$parent = laneShape; laneShape.$parent = plane;
+        plane.planeElement.unshift(laneShape); // lanes render behind flow nodes
+        laneBands.push({ memberIds: laneInfo.memberIds, y: laneY, height: laneHeight });
+        laneY += laneHeight;
+      }
+      contentBottom = laneY + POOL_PADDING;
+    }
+
+    laidOutProcess.$parent = definitions;
+    definitions.rootElements.push(laidOutProcess);
+
+    if (extracted.hadCollaboration) {
+      const participantBo = moddle.create('bpmn:Participant', { id: participant.participantId!, name: participant.participantName, processRef: laidOutProcess });
+      participantBo.$parent = collaboration;
+      collaboration.participants.push(participantBo);
+
+      const poolBounds = moddle.create('dc:Bounds', {
+        x: contentRect.x - POOL_PADDING - POOL_LABEL_BAND, y: contentRect.y - POOL_PADDING,
+        width: contentRect.width + POOL_PADDING * 2 + POOL_LABEL_BAND, height: contentBottom - (contentRect.y - POOL_PADDING),
+      });
+      const poolShape = moddle.create('bpmndi:BPMNShape', { id: `${participantBo.id}_di`, bpmnElement: participantBo, bounds: poolBounds, isHorizontal: true });
+      poolBounds.$parent = poolShape; poolShape.$parent = plane;
+      plane.planeElement.unshift(poolShape); // pool renders behind everything inside it
+
+      stackY = contentBottom + STACK_GAP;
+    } else {
+      stackY = contentBottom + STACK_GAP;
+    }
+  }
+
+  plane.bpmnElement = extracted.hadCollaboration ? collaboration : firstLaidOutProcess;
+
+  // Place annotations/groups in a dedicated notes area below all pools,
+  // rather than trying to preserve their original coordinates — confirmed
+  // live that keeping the original position let a group sized/placed
+  // relative to the *old* layout overlap or overhang past a pool whose
+  // final bounds came out a different shape. A fixed area below everything
+  // is never at risk of colliding with pool/lane content, at the cost of
+  // not staying visually "attached" to whatever it originally annotated.
+  const notesX0 = extracted.hadCollaboration ? POOL_LABEL_BAND : 0;
+  let noteX = notesX0;
+  const noteY = stackY;
+  for (const ann of extracted.annotations) {
+    ann.x = noteX;
+    ann.y = noteY;
+    noteX += ann.width + POOL_PADDING;
+  }
+  let groupY = noteY;
+  if (extracted.annotations.length > 0) {
+    groupY += Math.max(...extracted.annotations.map((a) => a.height)) + POOL_PADDING;
+  }
+  noteX = notesX0;
+  for (const grp of extracted.groups) {
+    grp.x = noteX;
+    grp.y = groupY;
+    noteX += grp.width + POOL_PADDING;
+  }
+
+  const { xml } = await moddle.toXML(definitions, { format: false });
+  return { xml, warnings, laneBands };
+}
+
+/**
+ * Reapplies message flows, annotations, groups, and their associations
+ * after import — live `modeling.*` calls compute correct DI/routing
+ * themselves, so there's no need to hand-build any of it pre-import.
+ * Elements keep their original ids through the moddle round-trip, so
+ * `elementRegistry.get(originalId)` reliably finds the right live shape.
+ */
+async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnServices): Promise<void> {
+  for (const mf of extracted.messageFlows) {
+    try {
+      addMessageFlow({ sourceId: mf.sourceId, targetId: mf.targetId, name: mf.name }, services);
+    } catch {
+      // best-effort — a message flow whose endpoints no longer resolve is skipped, not fatal
+    }
+  }
+  const { elementRegistry, modeling } = services;
+  for (const ann of extracted.annotations) {
+    try {
+      const [firstTarget, ...rest] = ann.associatedIds;
+      // Prefer placing it right below its associated element's actual
+      // final position (post lane-correction) instead of the shared notes
+      // area — confirmed live that using the notes area for an annotation
+      // WITH an association produced a valid but visually absurd result: a
+      // single Association line stretching diagonally across the entire
+      // diagram to reach it. Below (not beside/above) is deliberate: the
+      // row directly below a flow element is far more likely to be open
+      // space than left/right (which risk colliding with the next element
+      // in sequence) or above (which risks escaping past the lane/pool's
+      // own top edge for elements sitting near it, as "Review Request"
+      // does here). Orphan annotations with no association keep the
+      // notes-area fallback position computed in composePoolsAndLanes,
+      // since they have no natural anchor to place near.
+      let x = ann.x, y = ann.y;
+      const targetShape = firstTarget ? elementRegistry.get(firstTarget) : null;
+      if (targetShape) {
+        x = targetShape.x;
+        y = targetShape.y + targetShape.height + POOL_PADDING;
+      }
+      const result = addAnnotation({ text: ann.text, x, y, attachToId: firstTarget }, services) as any;
+      const annotationShape = elementRegistry.get(result.elementId);
+      for (const targetId of rest) {
+        const target = elementRegistry.get(targetId);
+        if (annotationShape && target) modeling.connect(annotationShape, target, { type: 'bpmn:Association' });
+      }
+    } catch {
+      // best-effort
+    }
+  }
+  for (const grp of extracted.groups) {
+    try {
+      addGroup({ name: grp.name, x: grp.x, y: grp.y, width: grp.width, height: grp.height }, services);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/**
+ * Thrown by `buildProcessViaAutoLayout` when the *existing* diagram already
+ * has a collaboration/lanes — merging new elements into "the" process and
+ * feeding the whole merged XML to `layoutProcess` would silently corrupt it
+ * (confirmed: bpmn-auto-layout's own `getProcess()` is a
+ * first-bpmn:Process-only lookup, so every other participant, every lane,
+ * and every annotation/group would be dropped on import). `buildProcess`
+ * catches this specifically and falls back to the old incremental path,
+ * which has no such blind spot. `build_process` has no schema field to
+ * target a specific participant/lane for a new element anyway, so this
+ * isn't a capability regression — just a safety guard against a case the
+ * new pipeline was never able to handle correctly.
+ */
+class CollaborationUnsupportedError extends Error {}
+
+/**
+ * Builds elements/flows as a bare semantic tree, merges them into the
+ * current diagram's existing content, lays the combination out via
+ * bpmn-auto-layout, and imports the result — replacing the incremental
+ * modeling.createShape() + ELK path for auto-layout requests it can handle.
+ * Returns the logical-id -> real-bpmn-js-id map, same contract as before.
+ */
+async function buildProcessViaAutoLayout(
+  elements: any[],
+  flows: any[],
+  services: BpmnServices,
+): Promise<Record<string, string>> {
+  const { moddle, bpmnFactory, injector } = services;
+
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  // Start from the diagram's current semantic content, not a fresh empty
+  // one — build_process is additive (can be called against an
+  // already-populated diagram), so a wholesale replace would be destructive.
+  const { xml: currentXml } = await modeler.saveXML({ format: false });
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const process = definitions.rootElements?.find((el: any) => el.$type === 'bpmn:Process');
+  if (!process) throw new Error('No bpmn:Process found in the current diagram');
+  if (definitions.rootElements?.some((el: any) => el.$type === 'bpmn:Collaboration') || process.laneSets?.length) {
+    throw new CollaborationUnsupportedError();
+  }
+  if (!process.flowElements) process.flowElements = [];
+
+  const boMap: Record<string, any> = {};
+  const idMap: Record<string, string> = {};
+  const expandedBos: any[] = [];
+
+  for (const el of elements) {
+    const bo = buildElementBo(moddle, bpmnFactory, definitions, process, el, boMap);
+    boMap[el.id as string] = bo;
+    idMap[el.id as string] = bo.id;
+    if (el.type === 'subprocess' && !(el.collapsed ?? false)) {
+      expandedBos.push(bo);
+    }
+  }
+
+  for (const flow of flows) {
+    const sourceBo = boMap[flow.from as string];
+    const targetBo = boMap[flow.to as string];
+    if (!sourceBo) throw new Error(`Flow source "${flow.from}" not found in idMap`);
+    if (!targetBo) throw new Error(`Flow target "${flow.to}" not found in idMap`);
+    buildFlowBo(moddle, bpmnFactory, sourceBo, targetBo, flow);
+  }
+
+  seedExpandedHints(moddle, definitions, process, expandedBos);
+
+  const { xml: mergedXml } = await moddle.toXML(definitions, { format: false });
+  const rawLaidOutXml = await layoutProcess(mergedXml);
+  const laidOutXml = await applyPostProcessing(rawLaidOutXml, moddle);
+  await modeler.importXML(laidOutXml);
+
+  // A single importXML() replacing the whole diagram settles its reactive
+  // listeners (including the linting service's report cache) more slowly
+  // than the many small incremental modeling.* commands the old pipeline
+  // used — confirmed live: validateDiagram()'s forced _update() can still
+  // return a stale "missing start event" false-positive several calls after
+  // import, well after the actual Modeler UI has already caught up. Give it
+  // a short settle delay before anything (validateDiagram, the caller) reads
+  // diagram state. Deliberately setTimeout, not requestAnimationFrame —
+  // confirmed live that rAF callbacks get throttled/suspended by Chromium
+  // when the Modeler window isn't focused/visible (routine during automated
+  // testing that creates/switches tabs rapidly), which hung this exact call
+  // indefinitely; setTimeout fires on a normal timer regardless of focus.
+  await new Promise<void>(r => setTimeout(r, 50));
+
+  return idMap;
+}
+
+/** All ids of currently-expanded subprocesses on the live canvas, using the same isExpanded check `validateLayout` uses. */
+function collectExpandedSubprocessIds(elementRegistry: any): Set<string> {
+  const ids = new Set<string>();
+  for (const el of elementRegistry.getAll()) {
+    if (el.type !== 'bpmn:SubProcess') continue;
+    const isExpanded = (el as any).isExpanded ?? (el as any).di?.isExpanded ?? false;
+    if (isExpanded) ids.add(el.id);
+  }
+  return ids;
+}
+
+/** Recursively finds a flowElement by id, descending into subprocesses. */
+function findFlowElementById(container: any, id: string): any {
+  if (!container?.flowElements) return undefined;
+  for (const fe of container.flowElements) {
+    if (fe.id === id) return fe;
+    if (fe.$type === 'bpmn:SubProcess') {
+      const found = findFlowElementById(fe, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Standalone `auto_layout` tool, migrated to bpmn-auto-layout. Re-lays out
+ * the whole current diagram (positions are replaced wholesale — matches the
+ * library's greenfield nature, same interpretation buildProcessViaAutoLayout
+ * uses for newly-built content).
+ *
+ * Collaborations/lanes/annotations/groups route through
+ * `layoutViaComposition` (the Phase 3 composition layer) instead of the
+ * direct `layoutProcess` call below, which only ever handles a single flat
+ * process. Falls back to the old ELK-based `smartAutoLayout` only if that
+ * composition itself throws — a bug in the new path shouldn't leave the
+ * user with no way to lay out a collaboration diagram at all.
+ *
+ * `elementId` (subprocess-scoped layout) is also not yet supported by this
+ * pipeline — true subtree-only layout (extract just that subprocess's
+ * children, lay out in isolation, merge positions back without touching
+ * anything else) is real, separate work not yet built. Rather than silently
+ * ignoring the scope or silently falling back to ELK for just this case,
+ * honor the request by widening it to the whole diagram and say so via
+ * `warning` — a wider blast radius than requested, but never a silent one.
+ */
+/**
+ * Live post-import correction pass: for any lane member whose actual Y
+ * position falls outside its lane's assigned band (bpmn-auto-layout has no
+ * lane awareness, so this happens whenever a branch/exception path in the
+ * graph lands above or below where its lane says it should be —
+ * `composePoolsAndLanes` only draws the band boundary, it never moves
+ * shapes into it), nudges the *whole out-of-band group within that lane*
+ * (preserving their relative spacing, not collapsing them onto each other)
+ * so its center lands in the band's center. Uses `modeling.moveElements`,
+ * the same live API `smartAutoLayout` already uses to apply computed
+ * positions — bpmn-js re-routes connected edges (including ones crossing
+ * into a different lane) as part of that command, the same as a user
+ * dragging a shape, so there's no need to hand-roll edge re-routing here.
+ */
+function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): void {
+  const { elementRegistry, modeling } = services;
+  for (const band of laneBands) {
+    const bandTop = band.y;
+    const bandBottom = band.y + band.height;
+    const outOfBand: any[] = [];
+    for (const id of band.memberIds) {
+      const shape = elementRegistry.get(id);
+      if (!shape) continue;
+      const centerY = shape.y + shape.height / 2;
+      if (centerY < bandTop || centerY > bandBottom) outOfBand.push(shape);
+    }
+    if (outOfBand.length === 0) continue;
+
+    const minY = Math.min(...outOfBand.map((s: any) => s.y));
+    const maxY = Math.max(...outOfBand.map((s: any) => s.y + s.height));
+    const dy = (band.y + band.height / 2) - (minY + maxY) / 2;
+
+    for (const shape of outOfBand) {
+      try {
+        modeling.moveElements([shape], { x: 0, y: dy });
+      } catch {
+        // best-effort — leave shapes that can't be moved where they are
+      }
+    }
+  }
+}
+
+async function layoutViaComposition(currentXml: string, services: BpmnServices, scopeId?: string): Promise<any> {
+  const { moddle, injector } = services;
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const extracted = extractComposition(definitions);
+  const { xml: composedXml, warnings, laneBands } = await composePoolsAndLanes(extracted, services);
+  await modeler.importXML(composedXml);
+
+  await new Promise<void>(r => setTimeout(r, 50));
+
+  correctLanePositions(laneBands, services);
+
+  await new Promise<void>(r => setTimeout(r, 50));
+
+  await reapplyArtifacts(extracted, services);
+
+  await new Promise<void>(r => setTimeout(r, 50));
+
+  const { rootElement: finalDefs } = await moddle.fromXML(composedXml);
+  const planeElements: any[] = finalDefs.diagrams?.[0]?.plane?.planeElement || [];
+  const positioned = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape').length + extracted.annotations.length + extracted.groups.length;
+  const routed = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge').length + extracted.messageFlows.length;
+
+  const result: Record<string, unknown> = { positioned, routed, participants: extracted.participants.length };
+  if (warnings.length) result.warnings = warnings;
+  if (scopeId) {
+    result.warning = `Subprocess-scoped auto-layout ("elementId") isn't supported alongside pool/lane composition yet — the whole diagram was laid out instead of just "${scopeId}".`;
+  }
+  return result;
+}
+
+async function layoutDiagramViaAutoLayout(
+  params: Record<string, unknown>,
+  services: BpmnServices,
+): Promise<any> {
+  const { moddle, injector, elementRegistry } = services;
+  const scopeId = params.elementId as string | undefined;
+
+  let modeler: any;
+  try {
+    modeler = injector.get('modeler');
+  } catch {
+    modeler = injector.get('bpmnjs');
+  }
+
+  const { xml: currentXml } = await modeler.saveXML({ format: false });
+  const { rootElement: definitions } = await moddle.fromXML(currentXml);
+  const process = definitions.rootElements?.find((el: any) => el.$type === 'bpmn:Process');
+  if (!process) throw new Error('No bpmn:Process found in the current diagram');
+
+  const hasCollaboration = definitions.rootElements?.some((el: any) => el.$type === 'bpmn:Collaboration');
+  const hasLanes = !!process.laneSets?.length;
+  const hasAnnotationsOrGroups = (process.flowElements || []).some(
+    (fe: any) => fe.$type === 'bpmn:TextAnnotation' || fe.$type === 'bpmn:Group',
+  );
+  if (hasCollaboration || hasLanes || hasAnnotationsOrGroups) {
+    try {
+      return await layoutViaComposition(currentXml, services, scopeId);
+    } catch (err: any) {
+      // Best-effort fallback — a composition bug shouldn't leave the user
+      // with no way to auto-layout a collaboration diagram at all.
+      const fallback: any = await smartAutoLayout(params, services);
+      fallback.warning = `${fallback.warning ? fallback.warning + ' ' : ''}bpmn-auto-layout composition failed (${err.message}) — fell back to the legacy layout engine.`;
+      return fallback;
+    }
+  }
+
+  const expandedIds = collectExpandedSubprocessIds(elementRegistry);
+  const expandedBos: any[] = [];
+  for (const id of expandedIds) {
+    const bo = findFlowElementById(process, id);
+    if (bo) expandedBos.push(bo);
+  }
+  seedExpandedHints(moddle, definitions, process, expandedBos);
+
+  const { xml: mergedXml } = await moddle.toXML(definitions, { format: false });
+  const rawLaidOutXml = await layoutProcess(mergedXml);
+  const laidOutXml = await applyPostProcessing(rawLaidOutXml, moddle);
+  await modeler.importXML(laidOutXml);
+
+  await new Promise<void>(r => setTimeout(r, 50));
+
+  const { rootElement: laidOutDefs } = await moddle.fromXML(laidOutXml);
+  const planeElements: any[] = laidOutDefs.diagrams?.[0]?.plane?.planeElement || [];
+  const positioned = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape').length;
+  const routed = planeElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge').length;
+
+  const result: Record<string, unknown> = { positioned, routed };
+  if (scopeId) {
+    result.warning = `Subprocess-scoped auto-layout ("elementId") isn't supported by the new layout engine yet — the whole diagram was laid out instead of just "${scopeId}".`;
+  }
+  return result;
+}
+
 async function buildProcess(
   params: Record<string, unknown>,
   services: BpmnServices
@@ -1628,6 +3348,52 @@ async function buildProcess(
 
   const root = canvas.getRootElement();
   if (!root) throw new Error('No diagram is currently open');
+
+  // Confirmed live: an element with no parentId defaults to `root` via
+  // resolveParent(), and when root is a bpmn:Collaboration (multiple
+  // pools), bpmn-js's own createShape internals crash trying to resolve a
+  // FlowElementsContainer for it ("Cannot read properties of undefined
+  // (reading 'push')") — neither this old path nor the new autoLayout
+  // pipeline has ever supported targeting "the" process inside a
+  // collaboration, since this schema has no field to name one. A parentId
+  // pointing at an expanded subprocess bypasses root resolution entirely
+  // and works fine regardless of collaboration structure — only the
+  // no-parentId case is actually broken.
+  const rootType = (root as any).businessObject?.$type || (root as any).type;
+  if (rootType === 'bpmn:Collaboration' && elements.some((el: any) => !el.parentId)) {
+    throw new Error(
+      'This diagram has a collaboration (multiple pools) — build_process can only place new elements inside an existing expanded subprocess ("parentId"), since there is no field to target a specific pool/process directly. Use add_element for individual elements inside a specific pool, or target an expanded subprocess via parentId.',
+    );
+  }
+
+  // bpmn-auto-layout pipeline: builds a semantic tree, merges it into the
+  // current diagram, and lays the combination out in one pass. Used whenever
+  // auto-layout is requested and every new element is one it supports
+  // (pools/lanes aren't creatable via this schema at all; textAnnotation/
+  // group requests fall through to the original incremental-createShape +
+  // ELK path below unchanged). If the *existing* diagram already has a
+  // collaboration/lanes, buildProcessViaAutoLayout throws
+  // CollaborationUnsupportedError and this falls through to that same old
+  // path too, rather than risking the silent-corruption bug described on
+  // that error class.
+  if (autoLayoutFlag && !hasUnsupportedAutoLayoutElements(elements)) {
+    try {
+      const idMap = await buildProcessViaAutoLayout(elements, flows, services);
+      const result: Record<string, unknown> = {
+        idMap,
+        elementCount: elements.length,
+        flowCount: flows.length,
+      };
+      try {
+        result.validation = await validateDiagram({}, services);
+      } catch (err: any) {
+        result.validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+      }
+      return result;
+    } catch (err) {
+      if (!(err instanceof CollaborationUnsupportedError)) throw err;
+    }
+  }
 
   const idMap: Record<string, string> = {};
   const flowIds: string[] = [];
@@ -1660,9 +3426,11 @@ async function buildProcess(
       shape = modeling.createShape({ type: 'bpmn:EndEvent' }, { x, y }, parent);
       const bo = shape.businessObject;
       const defType = END_EVENT_DEFS[typeName];
-      const eventDef = bpmnFactory.create(defType);
+      const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), defType, el.properties || {});
+      const eventDef = moddle.create(defType, refProps);
       eventDef.$parent = bo;
       bo.eventDefinitions = [eventDef];
+      modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
 
     // Handle subprocesses
     } else if (typeName === 'subprocess' || typeName === 'callActivity') {
@@ -1675,7 +3443,7 @@ async function buildProcess(
       const h = (el.height as number) || 200;
       shape = modeling.createShape(shapeAttrs, { x, y, width: w, height: h }, parent);
       if (el.calledElement && typeName === 'callActivity') {
-        modeling.updateProperties(shape, { calledElement: el.calledElement });
+        setZeebeCalledElement(moddle, modeling, shape, el.calledElement as string);
       }
 
     // Handle boundary events
@@ -1686,28 +3454,43 @@ async function buildProcess(
       if (!host) throw new Error(`Host element "${hostId}" not found for BoundaryEvent`);
       const boundaryPos = getBoundaryPosition(host, el.boundaryPosition || 'bottom');
       shape = modeling.createShape(
-        { type: 'bpmn:BoundaryEvent', host },
+        { type: 'bpmn:BoundaryEvent', cancelActivity: el.cancelActivity !== false },
         boundaryPos,
-        host.parent,
+        host,
+        { attach: true },
       );
-      if (el.cancelActivity === false) {
-        modeling.updateProperties(shape, { cancelActivity: false });
-      }
       if (el.eventDefinitionType) {
         const bo = shape.businessObject;
-        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = moddle.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+        // Boundary events always "catch" — require correlationKey on the Message itself.
+        if (el.eventDefinitionType === 'bpmn:MessageEventDefinition' && el.properties?.correlationKey && refProps.messageRef) {
+          setMessageSubscription(moddle, refProps.messageRef, el.properties.correlationKey);
+        }
       }
 
-    // Handle intermediate events
-    } else if (typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
+    // Handle start events (typed, e.g. Message Start Event) and intermediate events
+    } else if (typeName === 'startEvent' || typeName === 'intermediateCatchEvent' || typeName === 'intermediateThrowEvent') {
       shape = modeling.createShape({ type: TYPE_MAP[typeName] }, { x, y }, parent);
       if (el.eventDefinitionType && el.eventDefinitionType !== 'none') {
         const bo = shape.businessObject;
-        const eventDef = bpmnFactory.create(el.eventDefinitionType);
+        const refProps = eventDefRefProps(bpmnFactory, moddle, getDefinitions(bo, canvas), el.eventDefinitionType, el.properties || {});
+        const eventDef = moddle.create(el.eventDefinitionType, refProps);
         eventDef.$parent = bo;
         bo.eventDefinitions = [eventDef];
+        modeling.updateProperties(shape, { eventDefinitions: bo.eventDefinitions });
+        // Only intermediateCatchEvent "catches" — startEvent/intermediateThrowEvent don't correlate.
+        if (
+          el.eventDefinitionType === 'bpmn:MessageEventDefinition' &&
+          typeName === 'intermediateCatchEvent' &&
+          el.properties?.correlationKey &&
+          refProps.messageRef
+        ) {
+          setMessageSubscription(moddle, refProps.messageRef, el.properties.correlationKey);
+        }
       }
 
     // Standard elements
@@ -1734,19 +3517,17 @@ async function buildProcess(
         props.conditionExpression = expr;
       }
       if (el.properties.isExecutable !== undefined) props.isExecutable = el.properties.isExecutable;
-      if (el.properties.taskType) {
-        // Zeebe job type
-        const hasZeebe = !!moddle.getPackage('zeebe');
-        if (hasZeebe) {
-          const bo = shape.businessObject;
-          if (!bo.extensionElements) {
-            bo.extensionElements = moddle.create('bpmn:ExtensionElements', { values: [] });
-            bo.extensionElements.$parent = bo;
-          }
-          const taskDef = moddle.create('zeebe:TaskDefinition', { type: el.properties.taskType, retries: el.properties.taskRetries || '3' });
-          taskDef.$parent = bo.extensionElements;
-          bo.extensionElements.values.push(taskDef);
+      if (el.properties.messageRef && (shape.type === 'bpmn:ReceiveTask' || shape.type === 'bpmn:SendTask')) {
+        const definitions = getDefinitions(shape.businessObject, canvas);
+        if (definitions) {
+          props.messageRef = findOrCreateRootElement(bpmnFactory, definitions, 'bpmn:Message', el.properties.messageRef);
         }
+      }
+      if (el.properties.correlationKey && shape.type === 'bpmn:ReceiveTask' && moddle.getPackage('zeebe') && props.messageRef) {
+        setMessageSubscription(moddle, props.messageRef, el.properties.correlationKey);
+      }
+      if (el.properties.taskType && moddle.getPackage('zeebe')) {
+        setZeebeTaskDefinition(moddle, modeling, shape, el.properties.taskType, el.properties.taskRetries);
       }
       if (Object.keys(props).length > 0) {
         modeling.updateProperties(shape, props);
@@ -1787,6 +3568,9 @@ async function buildProcess(
       const expr = moddle.create('bpmn:FormalExpression', { body: flow.conditionExpression });
       modeling.updateProperties(connection, { conditionExpression: expr });
     }
+    if (flow.isDefault) {
+      modeling.updateProperties(source, { default: connection.businessObject });
+    }
 
     flowIds.push(connection.id);
   }
@@ -1800,30 +3584,66 @@ async function buildProcess(
     } catch {
       // Auto-layout is best-effort — don't fail the whole build
     }
+    // smartAutoLayout only lays out one scope at a time (children of the
+    // element passed as elementId, or the root process if omitted) — it
+    // never recurses into subprocesses, so any expanded subprocess built in
+    // this call would otherwise keep its children clustered at their
+    // original creation position instead of spread out inside the (now
+    // correctly sized and placed) subprocess box.
+    for (const el of elements) {
+      if (el.type !== 'subprocess' || (el.collapsed ?? false)) continue;
+      const realId = idMap[el.id as string];
+      if (!realId) continue;
+      try {
+        await smartAutoLayout({ diagramId: '', elementId: realId }, services);
+      } catch {
+        // Best-effort — leave that subprocess's children where they are
+      }
+    }
   }
 
-  return {
+  const result: Record<string, unknown> = {
     idMap,
     elementCount: elements.length,
     flowCount: flowIds.length,
   };
+
+  // Surface validation in the same turn instead of requiring a separate
+  // query_diagram {operation: "validate"} follow-up call — non-blocking,
+  // never fails the build itself.
+  try {
+    result.validation = await validateDiagram({}, services);
+  } catch (err: any) {
+    result.validation = { issues: [], count: 0, warning: `Validation check failed: ${err.message}` };
+  }
+
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
-/*  auto_layout — smart branch-aware layout engine                    */
+/*  auto_layout — ELK-based layout engine                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Options accepted by the smartAutoLayout tool.
+ * ELK controls most of the layout; these are the user-tunable knobs.
+ */
 interface LayoutOpts {
+  /** Minimum gap between nodes on different branches (pixels). Default 50. */
   branchSpacing: number;
+  /** Minimum gap between nodes in the same layer (pixels). Default 80. */
   horizontalSpacing: number;
-  flowRouting: 'orthogonal' | 'direct';
+  /** Edge routing style passed to ELK. Default 'orthogonal'. */
+  flowRouting: 'orthogonal' | 'polyline' | 'direct';
+  /** Alignment of nodes at a merge gateway. ELK handles this automatically. */
   mergeAlignment: 'center' | 'top-branch';
+  /** Where to pin boundary events on their host after ELK layout. */
   boundaryEventPosition: 'bottom' | 'bottom-right';
 }
 
 const DEFAULT_LAYOUT_OPTS: LayoutOpts = {
-  branchSpacing: 140,
-  horizontalSpacing: 80,
+  branchSpacing: 80,
+  horizontalSpacing: 120,
   flowRouting: 'orthogonal',
   mergeAlignment: 'center',
   boundaryEventPosition: 'bottom',
@@ -1838,268 +3658,229 @@ async function smartAutoLayout(
   const userOpts = (params.options as Partial<LayoutOpts>) || {};
   const opts: LayoutOpts = { ...DEFAULT_LAYOUT_OPTS, ...userOpts };
 
-  // Wait for rendering to complete so all element positions are up to date
-  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  // Wait for the renderer to settle so all element positions are current
+  await new Promise<void>(r => setTimeout(r, 50));
 
-  // Resolve scope: either a specific subprocess or the root
+  // Resolve layout scope: a specific subprocess or the root process
   const scope = scopeId ? elementRegistry.get(scopeId) : canvas.getRootElement();
   if (!scope) throw new Error(scopeId ? `Element "${scopeId}" not found` : 'No diagram open');
 
-  // Gather shapes and connections within scope
+  // ELK computes positions in its own local frame, starting near (0,0) —
+  // fine when scope is the canvas root (which has no meaningful position of
+  // its own), but wrong when scope is a subprocess sitting elsewhere on the
+  // canvas: applying ELK's local coordinates as absolute would drag the
+  // subprocess's children far outside its actual box, which then
+  // force-expands to contain them. Offset by the subprocess's own position
+  // so ELK's local layout lands inside it instead.
+  const offsetX = scopeId ? ((scope as any).x || 0) : 0;
+  const offsetY = scopeId ? ((scope as any).y || 0) : 0;
+
   const allElements: any[] = elementRegistry.getAll();
+
+  // Collect shapes directly inside this scope (skip labels, boundary events, connections)
   const shapes = allElements.filter((el: any) => {
     if (!el.type || el.type.startsWith('bpmndi:') || el.type === 'label') return false;
     if (el.waypoints) return false;
-    if (el.type === 'bpmn:BoundaryEvent') return false; // handled separately
+    if (el.type === 'bpmn:BoundaryEvent') return false; // repositioned separately after layout
     return el.parent === scope;
   });
+
+  // Collect connections whose source AND target are inside this scope
   const connections = allElements.filter((el: any) => {
     if (!el.waypoints) return false;
-    return el.source?.parent === scope || el.target?.parent === scope;
+    return el.source?.parent === scope && el.target?.parent === scope;
   });
 
   if (shapes.length === 0) return { positioned: 0, routed: 0 };
 
-  // Build adjacency: outgoing map and incoming count
-  const outgoing = new Map<string, { target: any; conn: any; name?: string }[]>();
-  const incomingCount = new Map<string, number>();
-  for (const s of shapes) {
-    outgoing.set(s.id, []);
-    incomingCount.set(s.id, 0);
-  }
-  for (const c of connections) {
-    const sid = c.source?.id, tid = c.target?.id;
-    if (!sid || !tid) continue;
-    if (!outgoing.has(sid) || !incomingCount.has(tid)) continue;
-    outgoing.get(sid)!.push({ target: c.target, conn: c, name: c.businessObject?.name });
-    incomingCount.set(tid, (incomingCount.get(tid) || 0) + 1);
-  }
-
-  // Find start nodes (no incoming within scope)
-  const startNodes = shapes.filter((s: any) =>
-    (incomingCount.get(s.id) || 0) === 0 || s.type === 'bpmn:StartEvent'
-  );
-  if (startNodes.length === 0) {
-    // Fallback: pick the first element
-    startNodes.push(shapes[0]);
+  // Boundary events are excluded from ELK's graph (see below), so a
+  // boundary event's outgoing flow is never a real ELK edge — which leaves
+  // its target with no edge connecting it to the graph at all. ELK then
+  // treats that target as a disconnected node and places it arbitrarily,
+  // forcing the manual L-route (applied post-layout, below) to stretch
+  // across whatever arbitrary distance ELK picked. Give ELK a synthetic
+  // host->target edge (never applied to the diagram, layout hint only) so
+  // it places these targets adjacent to the task they're actually next to.
+  const shapeIds = new Set(shapes.map((s: any) => s.id));
+  const syntheticEdges: Array<{ id: string; sources: string[]; targets: string[] }> = [];
+  for (const el of allElements) {
+    if (!el.waypoints || el.source?.type !== 'bpmn:BoundaryEvent') continue;
+    if (el.target?.parent !== scope) continue;
+    const host = el.source.host || el.source.parent;
+    if (!host || !shapeIds.has(host.id) || !shapeIds.has(el.target.id)) continue;
+    syntheticEdges.push({ id: `synthetic-${el.id}`, sources: [host.id], targets: [el.target.id] });
   }
 
-  // BFS to assign column (x) and row (y) per element
-  // Track: column index, row offset, and branch assignments
-  const colMap = new Map<string, number>(); // element id → column index
-  const rowMap = new Map<string, number>(); // element id → row offset
-  const visited = new Set<string>();
-  const queue: { el: any; col: number; row: number }[] = [];
+  // ── Build ELK graph ──────────────────────────────────────────────
 
-  for (const start of startNodes) {
-    if (visited.has(start.id)) continue;
-    queue.push({ el: start, col: 0, row: 0 });
-    visited.add(start.id);
+  const elkEdgeRouting =
+    opts.flowRouting === 'orthogonal' ? 'ORTHOGONAL'
+    : opts.flowRouting === 'polyline' ? 'POLYLINE'
+    : 'SPLINES';
+
+  const elk = new ELK();
+
+  const elkGraph = {
+    id: 'root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.edgeRouting': elkEdgeRouting,
+      'elk.layered.spacing.nodeNodeBetweenLayers': String(opts.horizontalSpacing),
+      'elk.spacing.nodeNode': String(opts.branchSpacing),
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+      'elk.padding': '[top=40,left=40,bottom=40,right=40]',
+    },
+    children: shapes.map((s: any) => ({
+      id: s.id,
+      width: s.width || 100,
+      height: s.height || 80,
+    })),
+    edges: connections.map((c: any) => ({
+      id: c.id,
+      sources: [c.source.id],
+      targets: [c.target.id],
+    })).concat(syntheticEdges),
+  };
+
+  // Run ELK layout — this is async but runs synchronously in the bundled build
+  let layoutResult: any;
+  try {
+    layoutResult = await elk.layout(elkGraph);
+  } catch (err: any) {
+    throw new Error(`ELK layout failed: ${err.message || err}`);
   }
 
-  let maxCol = 0;
-  while (queue.length > 0) {
-    const { el, col, row } = queue.shift()!;
-
-    // For convergence points (merge gateways), always take the latest column
-    // but allow row updates from the fan-out assignments
-    const existingCol = colMap.get(el.id);
-    if (existingCol !== undefined) {
-      // Keep the highest column (convergence: merge gateway needs to be after all branches)
-      if (col > existingCol) {
-        colMap.set(el.id, col);
-      }
-      continue; // Don't re-traverse outgoing — already processed
-    }
-
-    colMap.set(el.id, col);
-    rowMap.set(el.id, row);
-    if (col > maxCol) maxCol = col;
-
-    const targets = outgoing.get(el.id) || [];
-    const isGateway = el.type?.includes('Gateway');
-    const isBranching = isGateway && targets.length > 1;
-
-    if (isBranching) {
-      // Fan out branches vertically, centered on current row
-      // All targets get fanned — even if visited (they'll update col but not row)
-      const forwardTargets = targets.filter(t => !visited.has(t.target.id));
-
-      const branchCount = forwardTargets.length;
-      if (branchCount > 0) {
-        const startRow = row - ((branchCount - 1) * opts.branchSpacing) / 2;
-        forwardTargets.forEach((t, idx) => {
-          const branchRow = startRow + idx * opts.branchSpacing;
-          visited.add(t.target.id);
-          rowMap.set(t.target.id, branchRow); // Pre-assign row for fan-out
-          queue.push({ el: t.target, col: col + 1, row: branchRow });
-        });
-      }
-
-      // Loop-back targets: just update their column if needed
-      for (const t of targets) {
-        if (visited.has(t.target.id) && !forwardTargets.includes(t)) {
-          queue.push({ el: t.target, col: col + 1, row });
-        }
-      }
-    } else {
-      // Sequential: advance column, keep same row
-      for (const t of targets) {
-        if (!visited.has(t.target.id)) {
-          visited.add(t.target.id);
-          queue.push({ el: t.target, col: col + 1, row });
-        } else {
-          // Convergence: push to update column
-          queue.push({ el: t.target, col: col + 1, row });
-        }
-      }
-    }
+  // Build a map of id → ELK-assigned position (ELK returns top-left x/y)
+  const elkPositions = new Map<string, { x: number; y: number }>();
+  for (const node of (layoutResult.children || [])) {
+    elkPositions.set(node.id, { x: node.x, y: node.y });
   }
 
-  // Handle merge gateways: align to center of incoming branches
-  for (const s of shapes) {
-    if (!s.type?.includes('Gateway')) continue;
-    const inc = (s.incoming || []).filter((c: any) => c.source?.parent === scope);
-    if (inc.length < 2) continue;
-    // This is a merge gateway — compute average row of sources
-    const sourceRows = inc
-      .map((c: any) => rowMap.get(c.source?.id))
-      .filter((r: any): r is number => r !== undefined);
-    if (sourceRows.length >= 2) {
-      if (opts.mergeAlignment === 'center') {
-        rowMap.set(s.id, sourceRows.reduce((a: number, b: number) => a + b, 0) / sourceRows.length);
-      } else {
-        rowMap.set(s.id, Math.min(...sourceRows));
-      }
-    }
+  // ELK edge routing: map from connection id → array of bend-points
+  const elkEdges = new Map<string, Array<{ x: number; y: number }>>();
+  for (const edge of (layoutResult.edges || [])) {
+    const sections = edge.sections || [];
+    if (sections.length === 0) continue;
+    const section = sections[0];
+    const waypoints: Array<{ x: number; y: number }> = [];
+    if (section.startPoint) waypoints.push(section.startPoint);
+    for (const bp of (section.bendPoints || [])) waypoints.push(bp);
+    if (section.endPoint) waypoints.push(section.endPoint);
+    if (waypoints.length >= 2) elkEdges.set(edge.id, waypoints);
   }
 
-  // Convert column/row to pixel coordinates
-  const baseX = (scope.x || 0) + 60;
-  const baseY = (scope.y || 0) + (scope.height ? scope.height / 2 : 200);
+  // ── Apply positions and waypoints ───────────────────────────────
 
-  // Wrap all positioning + routing in a single undoable compound command
   let positioned = 0;
   let routed = 0;
 
   commandStack.execute('mcp.compound', { fn: () => {
 
-  for (const s of shapes) {
-    const col = colMap.get(s.id);
-    const row = rowMap.get(s.id);
-    if (col === undefined || row === undefined) continue;
+    // Move each shape to ELK's computed position
+    for (const s of shapes) {
+      const pos = elkPositions.get(s.id);
+      if (!pos) continue;
 
-    const elW = s.width || 36;
-    const elH = s.height || 36;
-    const targetX = baseX + col * (100 + opts.horizontalSpacing);
-    const targetY = baseY + row;
+      const elW = s.width || 36;
+      const elH = s.height || 36;
 
-    const cx = s.x + elW / 2;
-    const cy = s.y + elH / 2;
-    const dx = targetX - cx;
-    const dy = targetY - cy;
+      // ELK coordinates are relative to the layout scope's local frame;
+      // bpmn-js moveElements takes a delta from the current center, so
+      // compute that delta against the scope-offset absolute position.
+      const targetCx = pos.x + offsetX + elW / 2;
+      const targetCy = pos.y + offsetY + elH / 2;
+      const currentCx = s.x + elW / 2;
+      const currentCy = s.y + elH / 2;
+      const dx = targetCx - currentCx;
+      const dy = targetCy - currentCy;
 
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([s], { x: dx, y: dy });
-        positioned++;
-      } catch {
-        // Skip elements that fail to move
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        try {
+          modeling.moveElements([s], { x: dx, y: dy });
+          positioned++;
+        } catch {
+          // Skip elements that can't be moved
+        }
       }
     }
-  }
 
-  // Position boundary events on their host's edge
-  const boundaryEvents = allElements.filter((el: any) =>
-    el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
-  );
-  for (const be of boundaryEvents) {
-    const host = be.host || be.parent;
-    if (!host || !host.width) continue;
-    const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
-    const beCx = be.x + (be.width || 36) / 2;
-    const beCy = be.y + (be.height || 36) / 2;
-    const dx = pos.x - beCx;
-    const dy = pos.y - beCy;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([be], { x: dx, y: dy });
-        positioned++;
-      } catch { /* skip */ }
-    }
-  }
-
-  // Position boundary event TARGET tasks below their boundary event.
-  // Also find targets via the connections array (boundary event flows may
-  // not be in `connections` since they're filtered by parent scope).
-  const beFlows = allElements.filter((el: any) =>
-    el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
-  );
-  for (const conn of beFlows) {
-    const be = elementRegistry.get(conn.source.id);
-    const target = elementRegistry.get(conn.target?.id);
-    if (!be || !target || !target.width) continue;
-    const beCx = be.x + (be.width || 36) / 2;
-    const beBottom = be.y + (be.height || 36);
-    const targetW = target.width || 100;
-    const targetH = target.height || 80;
-    const targetCx = target.x + targetW / 2;
-    const targetCy = target.y + targetH / 2;
-    const desiredX = beCx;
-    const desiredY = beBottom + 60 + targetH / 2;
-    const dx = desiredX - targetCx;
-    const dy = desiredY - targetCy;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      try {
-        modeling.moveElements([target], { x: dx, y: dy });
-        positioned++;
-      } catch { /* skip — no direct mutation fallback */ }
-    }
-  }
-
-  // Route connections orthogonally
-  if (opts.flowRouting === 'orthogonal') {
+    // Apply ELK-computed edge waypoints
     for (const conn of connections) {
-      const src = conn.source, tgt = conn.target;
-      if (!src || !tgt) continue;
-
-      const srcCx = src.x + (src.width || 36) / 2;
-      const srcCy = src.y + (src.height || 36) / 2;
-      const tgtCx = tgt.x + (tgt.width || 36) / 2;
-      const tgtCy = tgt.y + (tgt.height || 36) / 2;
-      const srcRight = src.x + (src.width || 36);
-      const tgtLeft = tgt.x;
-
-      // Check if flow is a loop-back (target is to the left)
-      const isLoopBack = tgtCx <= srcCx;
-
-      let newWaypoints: { x: number; y: number }[];
-      if (isLoopBack) {
-        // Route below: source bottom → down → left → up → target bottom
-        const loopY = Math.max(srcCy, tgtCy) + (src.height || 80) / 2 + 60;
-        newWaypoints = [
-          { x: srcCx, y: srcCy + (src.height || 36) / 2 },
-          { x: srcCx, y: loopY },
-          { x: tgtCx, y: loopY },
-          { x: tgtCx, y: tgtCy + (tgt.height || 36) / 2 },
-        ];
-      } else if (Math.abs(srcCy - tgtCy) < 3) {
-        // Same y — straight horizontal
-        newWaypoints = [
-          { x: srcRight, y: srcCy },
-          { x: tgtLeft, y: tgtCy },
-        ];
-      } else {
-        // L-shaped routing
-        const midX = (srcRight + tgtLeft) / 2;
-        newWaypoints = [
-          { x: srcRight, y: srcCy },
-          { x: midX, y: srcCy },
-          { x: midX, y: tgtCy },
-          { x: tgtLeft, y: tgtCy },
-        ];
+      const rawWaypoints = elkEdges.get(conn.id);
+      if (!rawWaypoints || rawWaypoints.length < 2) continue;
+      const waypoints = rawWaypoints.map((wp) => ({ x: wp.x + offsetX, y: wp.y + offsetY }));
+      try {
+        if (typeof modeling.updateWaypoints === 'function') {
+          modeling.updateWaypoints(conn, waypoints);
+        } else {
+          modeling.layoutConnection(conn, {
+            connectionStart: waypoints[0],
+            connectionEnd: waypoints[waypoints.length - 1],
+          });
+        }
+        routed++;
+      } catch {
+        // Skip connections that fail to route
       }
+    }
 
+    // ── Reposition boundary events on their host's perimeter ────────
+    // ELK doesn't know about boundary events; pin them back after layout.
+    const boundaryEvents = allElements.filter((el: any) =>
+      el.type === 'bpmn:BoundaryEvent' && el.parent?.parent === scope
+    );
+    for (const be of boundaryEvents) {
+      const host = be.host || be.parent;
+      if (!host || !host.width) continue;
+      const pos = getBoundaryPosition(host, opts.boundaryEventPosition);
+      const beCx = be.x + (be.width || 36) / 2;
+      const beCy = be.y + (be.height || 36) / 2;
+      const dx = pos.x - beCx;
+      const dy = pos.y - beCy;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        try {
+          modeling.moveElements([be], { x: dx, y: dy });
+          positioned++;
+        } catch { /* skip */ }
+      }
+    }
+
+    // ── Route boundary event outgoing flows ─────────────────────────
+    // These connections were excluded from the ELK graph (boundary events
+    // are excluded from ELK), so route them with a simple L-shape.
+    const beFlows = allElements.filter((el: any) =>
+      el.waypoints && el.source?.type === 'bpmn:BoundaryEvent'
+    );
+    for (const conn of beFlows) {
+      const be = elementRegistry.get(conn.source.id);
+      const target = elementRegistry.get(conn.target?.id);
+      if (!be || !target || !target.width) continue;
+      const host = be.host || be.parent;
+      const beCx = be.x + (be.width || 36) / 2;
+      const beBottom = be.y + (be.height || 36);
+      const targetW = target.width || 100;
+      const targetH = target.height || 80;
+      const targetCx = target.x + targetW / 2;
+      const targetTop = target.y;
+      // The naive midpoint between the boundary event and its target can
+      // land inside the host's own box when the host is tall (a subprocess
+      // or call activity) — e.g. a 200px-tall host with the boundary on its
+      // bottom edge and the target above puts the midpoint dead center of
+      // the host, routing the flow line straight through it. Route below
+      // the host's bottom edge instead whenever that would happen.
+      const naiveMidY = beBottom + (targetTop - beBottom) / 2;
+      const hostTop = host?.height ? host.y : beBottom;
+      const hostBottom = host?.height ? host.y + host.height : beBottom;
+      const crossbarY = (naiveMidY > hostTop && naiveMidY < hostBottom) ? hostBottom + 20 : naiveMidY;
+      const newWaypoints = [
+        { x: beCx, y: beBottom },
+        { x: beCx, y: crossbarY },
+        { x: targetCx, y: crossbarY },
+        { x: targetCx, y: targetTop },
+      ];
       try {
         if (typeof modeling.updateWaypoints === 'function') {
           modeling.updateWaypoints(conn, newWaypoints);
@@ -2110,13 +3891,10 @@ async function smartAutoLayout(
           });
         }
         routed++;
-      } catch {
-        // Skip connections that fail to route
-      }
+      } catch { /* skip */ }
     }
-  }
 
-  }}); // end mcp.compound — all position + route changes are a single undo step
+  }}); // end mcp.compound
 
   return { positioned, routed, elementCount: shapes.length };
 }
@@ -2190,7 +3968,7 @@ async function validateLayout(
   // Boundary events in particular get default coordinates (e.g. 96, 58) on
   // creation and are only moved to the host's perimeter during the next
   // render cycle. Without this wait, we'd read stale default positions.
-  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  await new Promise<void>(r => setTimeout(r, 50));
 
   /**
    * Resolve an element to its rendered diagram shape with correct absolute

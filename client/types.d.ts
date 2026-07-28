@@ -20,3 +20,52 @@ declare module 'react' {
     setState(state: Partial<S> | ((prevState: S) => Partial<S>)): void;
   }
 }
+
+// ELK — declared here so the @ts-ignore import in bpmn-tools.ts has a typed
+// fallback. Once elkjs is installed, its own types take over via skipLibCheck.
+declare module 'elkjs' {
+  interface ELKLayoutOptions {
+    [key: string]: string;
+  }
+  interface ELKNode {
+    id: string;
+    width?: number;
+    height?: number;
+    x?: number;
+    y?: number;
+    layoutOptions?: ELKLayoutOptions;
+    children?: ELKNode[];
+    edges?: ELKEdge[];
+    labels?: Array<{ text: string }>;
+  }
+  interface ELKEdge {
+    id: string;
+    sources: string[];
+    targets: string[];
+    sections?: Array<{
+      startPoint: { x: number; y: number };
+      endPoint: { x: number; y: number };
+      bendPoints?: Array<{ x: number; y: number }>;
+    }>;
+  }
+  interface ELKConstructorOptions {
+    defaultLayoutOptions?: ELKLayoutOptions;
+    algorithms?: string[];
+    workerUrl?: string;
+  }
+  class ELK {
+    constructor(options?: ELKConstructorOptions);
+    layout(graph: ELKNode, options?: { layoutOptions?: ELKLayoutOptions }): Promise<ELKNode>;
+    knownLayoutOptions(): Promise<any[]>;
+    knownLayoutAlgorithms(): Promise<any[]>;
+    terminateWorker(): void;
+  }
+  export default ELK;
+}
+
+// bpmn-auto-layout ships no type declarations of its own (no .d.ts, no
+// "types"/"typings" field in package.json) — declared here so real logic
+// against it gets proper typing instead of `any`.
+declare module 'bpmn-auto-layout' {
+  export function layoutProcess(xml: string): Promise<string>;
+}

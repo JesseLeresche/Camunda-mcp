@@ -15,7 +15,8 @@ import {
   setFlowWaypointsSchema, autoLayoutSchema, getElementBoundsSchema,
   cloneElementSchema, batchOperationsSchema, addGroupSchema,
   patchElementSchema, buildProcessSchema, validateLayoutSchema, exportImageSchema,
-  listOpenDiagramsSchema, switchDiagramSchema,
+  listOpenDiagramsSchema, switchDiagramSchema, setExecutionPlatformVersionSchema,
+  validateDiagramSchema,
 } from './registry';
 
 const LOG_PREFIX = '[camunda-mcp]';
@@ -33,14 +34,25 @@ export interface CallToolResult {
 }
 
 /**
+ * Target Camunda 8 execution platform version stamped onto new diagrams.
+ * Override via MCP_EXECUTION_PLATFORM_VERSION if your cluster runs a
+ * different version — without this, Modeler silently defaults new diagrams
+ * to its own bundled version, which can drift from the connected cluster.
+ */
+const EXECUTION_PLATFORM_VERSION = process.env.MCP_EXECUTION_PLATFORM_VERSION || '8.6';
+
+/**
  * Minimal valid BPMN 2.0 XML for a new empty diagram.
  */
 const EMPTY_BPMN_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
                   xmlns:dc="http://www.omg.org/spec/BPMN/20100524/DC"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
                   id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn"
-                  exporter="Camunda MCP Plugin" exporterVersion="0.1.0">
+                  exporter="Camunda MCP Plugin" exporterVersion="0.1.0"
+                  modeler:executionPlatform="Camunda Cloud"
+                  modeler:executionPlatformVersion="${EXECUTION_PLATFORM_VERSION}">
   <bpmn:process id="Process_1" isExecutable="true" />
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
     <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1" />
@@ -95,24 +107,38 @@ async function createModel(
     };
   }
 
-  // Attempt to open the file in the Camunda Desktop Modeler via Electron's shell
+  // Open the file via Modeler's own 'open-diagram' action (same primitive
+  // switchTab uses) rather than shell.openPath() — shell.openPath() asks the
+  // OS to resolve a handler for .bpmn by file association, which on a
+  // machine without Modeler set as the default handler surfaces an "Open
+  // with…" picker instead of ever reaching Modeler. Going through the tab
+  // manager also gives us the real tab id directly, no polling/guessing.
+  let realDiagramId = diagramId;
+  let resolvedTab = false;
+  let warning: string | undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-    const { shell } = electron;
-    const errorMessage = await shell.openPath(filePath);
-    if (errorMessage) {
-      console.warn(`${LOG_PREFIX} shell.openPath warning: ${errorMessage}`);
-    }
-  } catch {
-    // Running outside Electron (e.g. tests) — skip shell.openPath
-    console.warn(
-      `${LOG_PREFIX} Electron not available; skipping shell.openPath`
+    const opened = await executeInRenderer(
+      `window.__mcpTabManager`
+      + ` ? window.__mcpTabManager.openDiagram(${JSON.stringify(filePath)})`
+      + ` : Promise.reject(new Error('Tab manager not initialized — ensure the plugin is loaded and at least one diagram has been opened'))`
     );
+    if (opened?.id) {
+      realDiagramId = opened.id;
+      resolvedTab = true;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`${LOG_PREFIX} Failed to open diagram via tab manager: ${message}`);
+    warning = `Could not confirm the new tab opened in Modeler (${message}). `
+      + 'Use manage_diagram {operation: "list"} to find the real tab id.';
   }
 
-  const result = { diagramId, filePath, message: `Created diagram "${name}"` };
-  console.log(`${LOG_PREFIX} Created model: ${diagramId} at ${filePath}`);
+  const result: Record<string, unknown> = { diagramId: realDiagramId, filePath, message: `Created diagram "${name}"` };
+  if (!resolvedTab) {
+    result.warning = warning ?? 'Could not confirm the new tab registered with the Modeler — '
+      + 'diagramId may not resolve. Use manage_diagram {operation: "list"} to find the real tab id.';
+  }
+  console.log(`${LOG_PREFIX} Created model: ${realDiagramId} at ${filePath} (resolved: ${resolvedTab})`);
 
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
@@ -554,7 +580,7 @@ const FACADE: Record<string, { op: string; map: Record<string, string> }> = {
     map: {
       create: 'create_model', list: 'list_open_diagrams', switch: 'switch_diagram',
       save: 'save_diagram', export_image: 'export_image', import_xml: 'import_xml',
-      get_xml: 'get_diagram_xml',
+      get_xml: 'get_diagram_xml', set_execution_platform_version: 'set_execution_platform_version',
     },
   },
   add_element: {
@@ -582,7 +608,7 @@ const FACADE: Record<string, { op: string; map: Record<string, string> }> = {
   },
   query_diagram: {
     op: 'operation',
-    map: { list: 'list_elements', get: 'get_element', bounds: 'get_element_bounds' },
+    map: { list: 'list_elements', get: 'get_element', bounds: 'get_element_bounds', validate: 'validate_diagram' },
   },
   manage_element: {
     op: 'operation',
@@ -728,7 +754,9 @@ export async function dispatch(
       case 'build_process':
       case 'validate_layout':
       case 'auto_layout':
-      case 'export_image': {
+      case 'export_image':
+      case 'set_execution_platform_version':
+      case 'validate_diagram': {
         // All renderer-dispatched tools: validate then forward via bridge
         if (toolName === 'add_start_event') addStartEventSchema.parse(params);
         else if (toolName === 'add_task') addTaskSchema.parse(params);
@@ -763,6 +791,8 @@ export async function dispatch(
         else if (toolName === 'validate_layout') validateLayoutSchema.parse(params);
         else if (toolName === 'auto_layout') autoLayoutSchema.parse(params);
         else if (toolName === 'export_image') exportImageSchema.parse(params);
+        else if (toolName === 'set_execution_platform_version') setExecutionPlatformVersionSchema.parse(params);
+        else if (toolName === 'validate_diagram') validateDiagramSchema.parse(params);
         else if (toolName === 'link_form_to_task') {
           linkFormToTaskSchema.parse(params);
           // Read the form JSON and pass it to the renderer so it can embed it

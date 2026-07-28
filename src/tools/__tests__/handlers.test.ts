@@ -438,6 +438,8 @@ describe('resolveFacade', () => {
     const cases: Array<[string, string, string]> = [
       ['manage_diagram', 'create', 'create_model'],
       ['manage_diagram', 'get_xml', 'get_diagram_xml'],
+      ['manage_diagram', 'set_execution_platform_version', 'set_execution_platform_version'],
+      ['add_element', 'start', 'add_start_event'],
       ['add_element', 'task', 'add_task'],
       ['add_element', 'pool', 'add_participant'],
       ['connect', 'sequence_flow', 'connect_elements'],
@@ -445,6 +447,7 @@ describe('resolveFacade', () => {
       ['update_element', 'properties', 'patch_element'],
       ['update_element', 'headers', 'set_task_headers'],
       ['query_diagram', 'bounds', 'get_element_bounds'],
+      ['query_diagram', 'validate', 'validate_diagram'],
       ['manage_element', 'clone', 'clone_element'],
       ['layout', 'auto', 'auto_layout'],
       ['manage_form', 'link_to_task', 'link_form_to_task'],
