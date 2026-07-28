@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeGrowthEnvelope, collectDescendantShapes } from '../bpmn-tools';
+import { computeGrowthEnvelope, collectDescendantShapes } from '../layout/pool-boundary';
 
 /**
  * #14 regression suite — pure geometry helpers behind the pool-overlap fix.

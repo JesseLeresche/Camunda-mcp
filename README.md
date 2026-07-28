@@ -372,13 +372,13 @@ After making changes, hot-reload inside the Modeler with **F12** (open DevTools)
 
 ### Adding new tools
 
-Every tool follows the same pattern across three files:
+Tool implementations are split across a few layers:
 
-1. **`src/tools/registry.ts`** -- Define a Zod input schema and add a `ToolDefinition` entry to the `tools` array. Set `executeLocal: true` for Node.js-side tools or `executeLocal: false` for tools that need bpmn-js API access.
+1. **Schema** -- Define a Zod input schema in `src/tools/schemas/primitives.ts` (internal per-tool schemas) or `src/tools/schemas/public.ts` (one of the 9 consolidated public tools). `src/tools/registry.ts` is a thin barrel re-exporting both, so no changes are needed there.
 
-2. **`src/tools/handlers.ts`** -- Add a `case` to the `dispatch()` switch. Local tools implement their logic here directly. Renderer tools forward via `ipcBridge(toolName, params)`.
+2. **Routing** -- For a new `operation` on an existing consolidated tool, add it to the relevant schema plus a `FACADE` map entry in `src/tools/handlers/facade.ts`. Add the schema to the `SCHEMA_BY_TOOL` lookup in `src/tools/handlers.ts` so params get validated before dispatch. Local (Node.js-side) tools are implemented in `src/tools/handlers/local-tools.ts`; renderer tools are forwarded via `ipcBridge(toolName, params)`.
 
-3. **`client/bpmn-tools.ts`** -- For renderer tools, add a `case` to `dispatchRendererTool()` and implement the bpmn-js API call using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`.
+3. **Renderer implementation** -- For renderer tools, implement the bpmn-js API call in the relevant file under `client/elements/` (`create.ts`, `mutate.ts`, `query.ts`, `forms.ts`), `client/diagram-io.ts`, or `client/batch.ts`, using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`. Then register it in the `TOOL_HANDLERS` lookup (and `SYNC_TOOL_NAMES` if it should be callable inside a compound command) in `client/bpmn-tools.ts`.
 
 ## Project Structure
 
@@ -390,17 +390,41 @@ camunda-mcp/
 ├── tsconfig.json                   # TypeScript config for Node.js side (src/ -> dist/)
 ├── tsconfig.client.json            # TypeScript config for renderer side (client/)
 ├── webpack.config.js               # Webpack config: bundles client/ -> client/dist/client.js
+├── dev/
+│   └── layout-tests.ts             # Standalone dev harness for tuning auto-layout options (npm run layout:test)
 ├── src/
-│   ├── server.ts                   # MCP HTTP server (Express + SDK) + renderer bridge
+│   ├── server.ts                   # MCP HTTP server (Express + SDK)
+│   ├── renderer-bridge.ts          # Electron executeJavaScript() bridge to the renderer
 │   ├── menu.ts                     # Menu status tracking (updateMenuStatus, getMenuLabel)
 │   └── tools/
-│       ├── registry.ts             # Tool definitions with Zod input schemas
-│       └── handlers.ts             # Dispatch router + local tool handlers (createModel, createForm, addFormField)
+│       ├── registry.ts             # Thin barrel: re-exports schemas/primitives.ts + schemas/public.ts
+│       ├── schemas/
+│       │   ├── primitives.ts       # Internal per-tool Zod schemas
+│       │   └── public.ts           # The 9 consolidated public tool schemas + tools[] listing
+│       ├── handlers.ts             # dispatch() + ipcBridge wiring + SCHEMA_BY_TOOL lookup
+│       └── handlers/
+│           ├── local-tools.ts      # Node.js-side tools (createModel, createForm, addFormField, createDmn, deployProcess)
+│           ├── tabs.ts             # Tab management (listOpenDiagrams, switchDiagram)
+│           ├── facade.ts           # FACADE map + resolveFacade (public tool+operation -> internal tool name)
+│           └── compact.ts          # compactResult (the `compact: true` response trimming)
 ├── client/
 │   ├── client.ts                   # Renderer entry: registers bpmn-js plugin + tab manager
-│   ├── bpmn-tools.ts               # bpmn-js DI module, renderer tool implementations
+│   ├── bpmn-tools.ts               # Dispatch hub: TOOL_HANDLERS lookup, dispatchRendererTool(Sync)
+│   ├── element-shared.ts           # Shared element-building helpers (used by elements/ and layout/)
+│   ├── elements/
+│   │   ├── create.ts               # add* element-creation tools
+│   │   ├── mutate.ts               # set*/resize/move/clone/delete/patch tools
+│   │   ├── query.ts                # list_elements, get_element, get_element_bounds
+│   │   └── forms.ts                # linkFormToTask (Camunda 7 & 8)
+│   ├── diagram-io.ts                # get/import/save/export_image, validate_diagram
+│   ├── batch.ts                     # batch_operations
+│   ├── layout/                      # bpmn-auto-layout pipeline (build_process, auto_layout)
+│   │   ├── bo-builders.ts, post-process.ts, composition.ts, subtree.ts,
+│   │   └── pool-boundary.ts, build-process.ts, auto-layout.ts
+│   ├── validate-layout.ts          # layout {operation: "validate"} advisory + auto-fix
 │   ├── tab-manager.ts              # Client extension for tab tracking and switching
 │   ├── types.d.ts                  # Type declarations for camunda-modeler-plugin-helpers + React
+│   ├── __tests__/                  # Vitest unit tests for the layout/composition subsystem
 │   └── dist/
 │       └── client.js               # Webpack output (generated, not checked in)
 └── dist/                           # tsc output (generated, not checked in)

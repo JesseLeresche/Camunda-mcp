@@ -3,7 +3,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 // @ts-ignore — bpmn-moddle ships no types; same pattern as other test files.
 import { BpmnModdle } from 'bpmn-moddle';
-import { extractComposition, bboxOfShapes, composePoolsAndLanes } from '../bpmn-tools';
+import { extractComposition, composePoolsAndLanes } from '../layout/composition';
+import { bboxOfShapes } from '../element-shared';
 
 /**
  * Phase 3 regression suite — extraction and retrofit of collaborations,

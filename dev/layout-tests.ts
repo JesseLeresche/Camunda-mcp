@@ -6,9 +6,9 @@
  * element collisions remain after layout.
  *
  * Usage:
- *   npx tsx src/layout-tests.ts
- *   npx tsx src/layout-tests.ts --dry-run          # fetch + collision check only, no layout
- *   npx tsx src/layout-tests.ts --diagram <id>     # target a specific diagram tab ID
+ *   npx tsx dev/layout-tests.ts
+ *   npx tsx dev/layout-tests.ts --dry-run          # fetch + collision check only, no layout
+ *   npx tsx dev/layout-tests.ts --diagram <id>     # target a specific diagram tab ID
  *
  * Layout options are at the top of this file — edit and re-run to test variations.
  */

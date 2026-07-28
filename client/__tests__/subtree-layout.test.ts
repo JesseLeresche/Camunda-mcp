@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 // @ts-ignore — bpmn-moddle ships no types; same pattern as other test files.
 import { BpmnModdle } from 'bpmn-moddle';
-import { findScopeContainer, layoutSubtreeXml } from '../bpmn-tools';
+import { findScopeContainer, layoutSubtreeXml } from '../layout/subtree';
 
 /**
  * #10 regression suite — the pure half of the subtree-scoped auto-layout
