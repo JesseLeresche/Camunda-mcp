@@ -189,93 +189,79 @@ McpCompoundHandler.prototype.execute = function(context: any) {
 };
 McpCompoundHandler.prototype.revert = function() {};
 
+type ToolHandler = (params: Record<string, unknown>, services: BpmnServices) => any;
+
+// Single source of truth for tool-name -> handler routing, read by both
+// dispatchRendererTool and dispatchRendererToolSync below — replaces two
+// independently-hand-maintained switch statements that had to be kept in
+// sync by hand (a tool added to one and not the other was a silent runtime
+// gap, not a compile error).
+const TOOL_HANDLERS: Record<string, ToolHandler> = {
+  add_start_event: addStartEvent,
+  add_task: addTask,
+  add_end_event: addEndEvent,
+  connect_elements: connectElements,
+  link_form_to_task: linkFormToTask,
+  add_gateway: addGateway,
+  add_event: addEvent,
+  add_subprocess: addSubprocess,
+  set_properties: setProperties,
+  set_io_mapping: setIoMapping,
+  set_task_headers: setTaskHeaders,
+  list_elements: listElements,
+  get_element: getElement,
+  delete_element: deleteElement,
+  get_diagram_xml: getDiagramXml,
+  import_xml: importXml,
+  move_element: moveElement,
+  save_diagram: saveDiagram,
+  add_participant: addParticipant,
+  add_lane: addLane,
+  add_end_event_typed: addEndEventTyped,
+  add_message_flow: addMessageFlow,
+  add_annotation: addAnnotation,
+  resize_element: resizeElement,
+  set_flow_waypoints: setFlowWaypoints,
+  get_element_bounds: getElementBounds,
+  clone_element: cloneElement,
+  batch_operations: batchOperations,
+  add_group: addGroup,
+  patch_element: patchElement,
+  build_process: buildProcess,
+  validate_layout: validateLayout,
+  auto_layout: layoutDiagramViaAutoLayout,
+  export_image: exportImage,
+  set_execution_platform_version: setExecutionPlatformVersion,
+  validate_diagram: validateDiagram,
+};
+
 export async function dispatchRendererTool(
   tool: string,
   params: Record<string, unknown>,
   services: BpmnServices
 ): Promise<any> {
-  switch (tool) {
-    case 'add_start_event':
-      return addStartEvent(params, services);
-    case 'add_task':
-      return addTask(params, services);
-    case 'add_end_event':
-      return addEndEvent(params, services);
-    case 'connect_elements':
-      return connectElements(params, services);
-    case 'link_form_to_task':
-      return linkFormToTask(params, services);
-    case 'add_gateway':
-      return addGateway(params, services);
-    case 'add_event':
-      return addEvent(params, services);
-    case 'add_subprocess':
-      return addSubprocess(params, services);
-    case 'set_properties':
-      return setProperties(params, services);
-    case 'set_io_mapping':
-      return setIoMapping(params, services);
-    case 'set_task_headers':
-      return setTaskHeaders(params, services);
-    case 'list_elements':
-      return listElements(params, services);
-    case 'get_element':
-      return getElement(params, services);
-    case 'delete_element':
-      return deleteElement(params, services);
-    case 'get_diagram_xml':
-      return getDiagramXml(params, services);
-    case 'import_xml':
-      return importXml(params, services);
-    case 'move_element':
-      return moveElement(params, services);
-    case 'save_diagram':
-      return saveDiagram(params, services);
-    case 'add_participant':
-      return addParticipant(params, services);
-    case 'add_lane':
-      return addLane(params, services);
-    case 'add_end_event_typed':
-      return addEndEventTyped(params, services);
-    case 'add_message_flow':
-      return addMessageFlow(params, services);
-    case 'add_annotation':
-      return addAnnotation(params, services);
-    case 'resize_element':
-      return resizeElement(params, services);
-    case 'set_flow_waypoints':
-      return setFlowWaypoints(params, services);
-    case 'get_element_bounds':
-      return getElementBounds(params, services);
-    case 'clone_element':
-      return cloneElement(params, services);
-    case 'batch_operations':
-      return batchOperations(params, services);
-    case 'add_group':
-      return addGroup(params, services);
-    case 'patch_element':
-      return patchElement(params, services);
-    case 'build_process':
-      return buildProcess(params, services);
-    case 'validate_layout':
-      return validateLayout(params, services);
-    case 'auto_layout':
-      return layoutDiagramViaAutoLayout(params, services);
-    case 'export_image':
-      return exportImage(params, services);
-    case 'set_execution_platform_version':
-      return setExecutionPlatformVersion(params, services);
-    case 'validate_diagram':
-      return validateDiagram(params, services);
-    default:
-      throw new Error(`Unknown renderer tool: "${tool}"`);
-  }
+  const handler = TOOL_HANDLERS[tool];
+  if (!handler) throw new Error(`Unknown renderer tool: "${tool}"`);
+  return handler(params, services);
 }
 
 // Tools that are async and cannot be dispatched synchronously inside a compound
 export const ASYNC_TOOLS = new Set([
   'get_diagram_xml', 'import_xml', 'save_diagram', 'export_image',
   'build_process', 'auto_layout', 'batch_operations',
+]);
+
+// Tools wired for sync dispatch inside commandStack compound commands — a
+// narrower set than "not in ASYNC_TOOLS": validate_diagram and
+// set_execution_platform_version are neither async-only nor sync-wired
+// today, so they're excluded here too (unchanged from the original switch).
+const SYNC_TOOL_NAMES = new Set([
+  'add_start_event', 'add_task', 'add_end_event', 'connect_elements', 'link_form_to_task',
+  'add_gateway', 'add_event', 'add_subprocess', 'set_properties', 'set_io_mapping',
+  'set_task_headers', 'list_elements', 'get_element', 'delete_element', 'move_element',
+  'add_participant', 'add_lane', 'add_end_event_typed', 'add_message_flow', 'add_annotation',
+  'resize_element', 'set_flow_waypoints', 'get_element_bounds', 'clone_element', 'add_group',
+  'patch_element', 'validate_layout',
 ]);
 
 /**
@@ -287,37 +273,10 @@ export function dispatchRendererToolSync(
   params: Record<string, unknown>,
   services: BpmnServices
 ): any {
-  switch (tool) {
-    case 'add_start_event':      return addStartEvent(params, services);
-    case 'add_task':             return addTask(params, services);
-    case 'add_end_event':        return addEndEvent(params, services);
-    case 'connect_elements':     return connectElements(params, services);
-    case 'link_form_to_task':    return linkFormToTask(params, services);
-    case 'add_gateway':          return addGateway(params, services);
-    case 'add_event':            return addEvent(params, services);
-    case 'add_subprocess':       return addSubprocess(params, services);
-    case 'set_properties':       return setProperties(params, services);
-    case 'set_io_mapping':       return setIoMapping(params, services);
-    case 'set_task_headers':     return setTaskHeaders(params, services);
-    case 'list_elements':        return listElements(params, services);
-    case 'get_element':          return getElement(params, services);
-    case 'delete_element':       return deleteElement(params, services);
-    case 'move_element':         return moveElement(params, services);
-    case 'add_participant':      return addParticipant(params, services);
-    case 'add_lane':             return addLane(params, services);
-    case 'add_end_event_typed':  return addEndEventTyped(params, services);
-    case 'add_message_flow':     return addMessageFlow(params, services);
-    case 'add_annotation':       return addAnnotation(params, services);
-    case 'resize_element':       return resizeElement(params, services);
-    case 'set_flow_waypoints':   return setFlowWaypoints(params, services);
-    case 'get_element_bounds':   return getElementBounds(params, services);
-    case 'clone_element':        return cloneElement(params, services);
-    case 'add_group':            return addGroup(params, services);
-    case 'patch_element':        return patchElement(params, services);
-    case 'validate_layout':      return validateLayout(params, services);
-    default:
-      throw new Error(`Tool "${tool}" cannot be dispatched synchronously`);
+  if (!SYNC_TOOL_NAMES.has(tool)) {
+    throw new Error(`Tool "${tool}" cannot be dispatched synchronously`);
   }
+  return TOOL_HANDLERS[tool](params, services);
 }
 
 const McpCommandModule = {
