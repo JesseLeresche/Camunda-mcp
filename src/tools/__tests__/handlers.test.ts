@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { dispatch, resolveFacade } from '../handlers';
+import { dispatch } from '../handlers';
+import { resolveFacade } from '../handlers/facade';
 import { tools } from '../registry';
 
 /**
