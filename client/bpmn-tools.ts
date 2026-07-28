@@ -3269,6 +3269,21 @@ async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{
     modeler = injector.get('bpmnjs');
   }
 
+  // Confirmed live: modeler.saveXML() below has a real side effect on this
+  // diagram's *live* element positions (not just the string it returns) —
+  // Camunda Modeler normalizes/shifts the whole canvas as part of
+  // exporting, at least the first time it's called after an
+  // autoLayout-built import. Snapshot every element's position up front so
+  // anything outside scopeId can be restored exactly afterward — this
+  // primitive's whole contract (#10) is that content outside scope is never
+  // touched, and that has to hold regardless of what saveXML does as a
+  // side effect underneath it.
+  const preSaveXmlPositions = new Map<string, { x: number; y: number }>(
+    elementRegistry.getAll()
+      .filter((el: any) => el.x !== undefined && el.type !== 'label')
+      .map((el: any) => [el.id, { x: el.x, y: el.y }]),
+  );
+
   const { xml: currentXml } = await modeler.saveXML({ format: false });
   const { rootElement: definitions } = await moddle.fromXML(currentXml);
   const expandedIds = collectExpandedSubprocessIds(elementRegistry);
@@ -3286,6 +3301,27 @@ async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{
   const dx = liveBbox.x - laidOutBbox.x;
   const dy = liveBbox.y - laidOutBbox.y;
 
+  // Grow the container to fit every target position before moving any
+  // child, so it visually contains its relaid-out children afterward.
+  // Grow-only — never shrinks it smaller than it already was.
+  const scopeShape = elementRegistry.get(scopeId);
+  if (scopeShape) {
+    const targetRects = shapes.map((s: any) => ({ bounds: { x: s.bounds.x + dx, y: s.bounds.y + dy, width: s.bounds.width, height: s.bounds.height } }));
+    const targetsBbox = bboxOfShapes(targetRects);
+    const PADDING = 40;
+    const minX = Math.min(scopeShape.x, targetsBbox.x - PADDING);
+    const minY = Math.min(scopeShape.y, targetsBbox.y - PADDING);
+    const maxX = Math.max(scopeShape.x + scopeShape.width, targetsBbox.x + targetsBbox.width + PADDING);
+    const maxY = Math.max(scopeShape.y + scopeShape.height, targetsBbox.y + targetsBbox.height + PADDING);
+    if (minX < scopeShape.x || minY < scopeShape.y || maxX > scopeShape.x + scopeShape.width || maxY > scopeShape.y + scopeShape.height) {
+      try {
+        modeling.resizeShape(scopeShape, { x: minX, y: minY, width: maxX - minX, height: maxY - minY });
+      } catch {
+        // best-effort — individual child moves below still try even if this fails
+      }
+    }
+  }
+
   for (const s of shapes) {
     const liveShape = elementRegistry.get(s.bpmnElement.id);
     if (!liveShape) continue;
@@ -3296,6 +3332,25 @@ async function layoutSubtree(scopeId: string, services: BpmnServices): Promise<{
       modeling.moveElements([liveShape], { x: moveDx, y: moveDy });
     } catch {
       // best-effort — leave shapes that can't be moved where they are
+    }
+  }
+
+  // Undo saveXML's normalization (and anything else unintended) for every
+  // element that isn't part of scopeId's own subtree — restores each back
+  // to its exact recorded position from before saveXML ran.
+  const scopedIds = new Set(shapes.map((s: any) => s.bpmnElement.id));
+  scopedIds.add(scopeId);
+  for (const [id, original] of preSaveXmlPositions) {
+    if (scopedIds.has(id)) continue;
+    const liveShape = elementRegistry.get(id);
+    if (!liveShape) continue;
+    const restoreDx = original.x - liveShape.x;
+    const restoreDy = original.y - liveShape.y;
+    if (restoreDx === 0 && restoreDy === 0) continue;
+    try {
+      modeling.moveElements([liveShape], { x: restoreDx, y: restoreDy });
+    } catch {
+      // best-effort — leave shapes that can't be restored where they are
     }
   }
 
