@@ -211,13 +211,23 @@ export async function composePoolsAndLanes(
     const postXml = await applyPostProcessing(rawLaidOutXml, moddle);
     const { rootElement: laidOutDefs } = await moddle.fromXML(postXml);
     const laidOutProcess = laidOutDefs.rootElements.find((el: any) => el.$type === 'bpmn:Process');
-    const laidOutPlaneElements: any[] = laidOutDefs.diagrams[0].plane.planeElement;
+    // A completely empty pool (no flow elements at all) round-trips through
+    // layoutProcess/moddle with no planeElement array at all rather than an
+    // empty one — confirmed live (a pool with zero content threw "Cannot
+    // read properties of undefined (reading 'filter')" here).
+    const laidOutPlaneElements: any[] = laidOutDefs.diagrams?.[0]?.plane?.planeElement || [];
     const shapes = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape');
     const edges = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge');
 
     if (!firstLaidOutProcess) firstLaidOutProcess = laidOutProcess;
 
-    const bbox = bboxOfShapes(shapes);
+    // bboxOfShapes's Math.min/max over an empty array is +/-Infinity, not a
+    // usable rect — same empty-shapes guard already used for lane bands
+    // below (memberShapes.length > 0 ? bboxOfShapes(...) : fallback).
+    // 100x80 matches addTask's default single-element size, so an empty
+    // pool still gets a sensible minimal footprint instead of corrupt
+    // geometry.
+    const bbox = shapes.length > 0 ? bboxOfShapes(shapes) : { x: 0, y: 0, width: 100, height: 80 };
     const marginX = POOL_PADDING + (extracted.hadCollaboration ? POOL_LABEL_BAND : 0);
     const dx = -bbox.x + marginX;
     const dy = -bbox.y + stackY + POOL_PADDING;
