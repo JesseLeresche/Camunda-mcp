@@ -315,13 +315,20 @@ export async function composePoolsAndLanes(
  * themselves, so there's no need to hand-build any of it pre-import.
  * Elements keep their original ids through the moddle round-trip, so
  * `elementRegistry.get(originalId)` reliably finds the right live shape.
+ *
+ * Each restoration is best-effort (an endpoint that no longer resolves
+ * shouldn't fail the whole layout run), but a silently dropped artifact is
+ * indistinguishable from one that was never there — so every failure is
+ * reported back via the returned warnings instead of swallowed, mirroring
+ * `composePoolsAndLanes`'s existing lane-interleaving warning.
  */
-async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnServices): Promise<void> {
+async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnServices): Promise<string[]> {
+  const warnings: string[] = [];
   for (const mf of extracted.messageFlows) {
     try {
       addMessageFlow({ sourceId: mf.sourceId, targetId: mf.targetId, name: mf.name }, services);
-    } catch {
-      // best-effort — a message flow whose endpoints no longer resolve is skipped, not fatal
+    } catch (err: any) {
+      warnings.push(`Message flow "${mf.name || mf.id}" could not be restored: ${err.message || err}`);
     }
   }
   const { elementRegistry, modeling } = services;
@@ -353,17 +360,18 @@ async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnS
         const target = elementRegistry.get(targetId);
         if (annotationShape && target) modeling.connect(annotationShape, target, { type: 'bpmn:Association' });
       }
-    } catch {
-      // best-effort
+    } catch (err: any) {
+      warnings.push(`Annotation "${ann.text || ann.id}" could not be restored: ${err.message || err}`);
     }
   }
   for (const grp of extracted.groups) {
     try {
       addGroup({ name: grp.name, x: grp.x, y: grp.y, width: grp.width, height: grp.height }, services);
-    } catch {
-      // best-effort
+    } catch (err: any) {
+      warnings.push(`Group "${grp.name || grp.id}" could not be restored: ${err.message || err}`);
     }
   }
+  return warnings;
 }
 
 /**
@@ -379,8 +387,9 @@ async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnS
  * different lane) as part of that command, the same as a user dragging a
  * shape, so there's no need to hand-roll edge re-routing here.
  */
-function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): void {
+function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): string[] {
   const { elementRegistry, modeling } = services;
+  const warnings: string[] = [];
   for (const band of laneBands) {
     const bandTop = band.y;
     const bandBottom = band.y + band.height;
@@ -400,11 +409,12 @@ function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): vo
     for (const shape of outOfBand) {
       try {
         modeling.moveElements([shape], { x: 0, y: dy });
-      } catch {
-        // best-effort — leave shapes that can't be moved where they are
+      } catch (err: any) {
+        warnings.push(`Element "${shape.businessObject?.name || shape.id}" could not be repositioned into its lane band: ${err.message || err}`);
       }
     }
   }
+  return warnings;
 }
 
 export async function layoutViaComposition(currentXml: string, services: BpmnServices): Promise<any> {
@@ -423,11 +433,11 @@ export async function layoutViaComposition(currentXml: string, services: BpmnSer
 
   await new Promise<void>(r => setTimeout(r, 50));
 
-  correctLanePositions(laneBands, services);
+  warnings.push(...correctLanePositions(laneBands, services));
 
   await new Promise<void>(r => setTimeout(r, 50));
 
-  await reapplyArtifacts(extracted, services);
+  warnings.push(...await reapplyArtifacts(extracted, services));
 
   await new Promise<void>(r => setTimeout(r, 50));
 
