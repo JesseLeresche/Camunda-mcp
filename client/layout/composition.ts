@@ -94,6 +94,20 @@ export function extractComposition(definitions: any): ExtractedComposition {
       if (!collectArtifact(fe)) kept.push(fe);
     }
     processBo.flowElements = kept;
+
+    // TextAnnotation/Group/Association are Artifact subtypes, stored on
+    // bpmn:Process#artifacts — a property separate from #flowElements (the
+    // collaboration-level loop below already reads collaboration.artifacts
+    // correctly; this was the missing per-participant equivalent, so any
+    // annotation/group attached directly to a specific pool's process
+    // rather than the collaboration root was silently invisible to
+    // extraction entirely, never even attempted for restoration).
+    const keptArtifacts: any[] = [];
+    for (const art of processBo.artifacts || []) {
+      if (!collectArtifact(art)) keptArtifacts.push(art);
+    }
+    processBo.artifacts = keptArtifacts;
+
     processBo.laneSets = [];
 
     participants.push({ participantId: participantBo?.id ?? null, participantName: participantBo?.name, processBo, laneInfos });
@@ -197,13 +211,23 @@ export async function composePoolsAndLanes(
     const postXml = await applyPostProcessing(rawLaidOutXml, moddle);
     const { rootElement: laidOutDefs } = await moddle.fromXML(postXml);
     const laidOutProcess = laidOutDefs.rootElements.find((el: any) => el.$type === 'bpmn:Process');
-    const laidOutPlaneElements: any[] = laidOutDefs.diagrams[0].plane.planeElement;
+    // A completely empty pool (no flow elements at all) round-trips through
+    // layoutProcess/moddle with no planeElement array at all rather than an
+    // empty one — confirmed live (a pool with zero content threw "Cannot
+    // read properties of undefined (reading 'filter')" here).
+    const laidOutPlaneElements: any[] = laidOutDefs.diagrams?.[0]?.plane?.planeElement || [];
     const shapes = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNShape');
     const edges = laidOutPlaneElements.filter((pe: any) => pe.$type === 'bpmndi:BPMNEdge');
 
     if (!firstLaidOutProcess) firstLaidOutProcess = laidOutProcess;
 
-    const bbox = bboxOfShapes(shapes);
+    // bboxOfShapes's Math.min/max over an empty array is +/-Infinity, not a
+    // usable rect — same empty-shapes guard already used for lane bands
+    // below (memberShapes.length > 0 ? bboxOfShapes(...) : fallback).
+    // 100x80 matches addTask's default single-element size, so an empty
+    // pool still gets a sensible minimal footprint instead of corrupt
+    // geometry.
+    const bbox = shapes.length > 0 ? bboxOfShapes(shapes) : { x: 0, y: 0, width: 100, height: 80 };
     const marginX = POOL_PADDING + (extracted.hadCollaboration ? POOL_LABEL_BAND : 0);
     const dx = -bbox.x + marginX;
     const dy = -bbox.y + stackY + POOL_PADDING;
@@ -315,13 +339,20 @@ export async function composePoolsAndLanes(
  * themselves, so there's no need to hand-build any of it pre-import.
  * Elements keep their original ids through the moddle round-trip, so
  * `elementRegistry.get(originalId)` reliably finds the right live shape.
+ *
+ * Each restoration is best-effort (an endpoint that no longer resolves
+ * shouldn't fail the whole layout run), but a silently dropped artifact is
+ * indistinguishable from one that was never there — so every failure is
+ * reported back via the returned warnings instead of swallowed, mirroring
+ * `composePoolsAndLanes`'s existing lane-interleaving warning.
  */
-async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnServices): Promise<void> {
+async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnServices): Promise<string[]> {
+  const warnings: string[] = [];
   for (const mf of extracted.messageFlows) {
     try {
       addMessageFlow({ sourceId: mf.sourceId, targetId: mf.targetId, name: mf.name }, services);
-    } catch {
-      // best-effort — a message flow whose endpoints no longer resolve is skipped, not fatal
+    } catch (err: any) {
+      warnings.push(`Message flow "${mf.name || mf.id}" could not be restored: ${err.message || err}`);
     }
   }
   const { elementRegistry, modeling } = services;
@@ -353,17 +384,18 @@ async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnS
         const target = elementRegistry.get(targetId);
         if (annotationShape && target) modeling.connect(annotationShape, target, { type: 'bpmn:Association' });
       }
-    } catch {
-      // best-effort
+    } catch (err: any) {
+      warnings.push(`Annotation "${ann.text || ann.id}" could not be restored: ${err.message || err}`);
     }
   }
   for (const grp of extracted.groups) {
     try {
       addGroup({ name: grp.name, x: grp.x, y: grp.y, width: grp.width, height: grp.height }, services);
-    } catch {
-      // best-effort
+    } catch (err: any) {
+      warnings.push(`Group "${grp.name || grp.id}" could not be restored: ${err.message || err}`);
     }
   }
+  return warnings;
 }
 
 /**
@@ -379,8 +411,9 @@ async function reapplyArtifacts(extracted: ExtractedComposition, services: BpmnS
  * different lane) as part of that command, the same as a user dragging a
  * shape, so there's no need to hand-roll edge re-routing here.
  */
-function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): void {
+function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): string[] {
   const { elementRegistry, modeling } = services;
+  const warnings: string[] = [];
   for (const band of laneBands) {
     const bandTop = band.y;
     const bandBottom = band.y + band.height;
@@ -400,11 +433,12 @@ function correctLanePositions(laneBands: LaneBand[], services: BpmnServices): vo
     for (const shape of outOfBand) {
       try {
         modeling.moveElements([shape], { x: 0, y: dy });
-      } catch {
-        // best-effort — leave shapes that can't be moved where they are
+      } catch (err: any) {
+        warnings.push(`Element "${shape.businessObject?.name || shape.id}" could not be repositioned into its lane band: ${err.message || err}`);
       }
     }
   }
+  return warnings;
 }
 
 export async function layoutViaComposition(currentXml: string, services: BpmnServices): Promise<any> {
@@ -423,11 +457,11 @@ export async function layoutViaComposition(currentXml: string, services: BpmnSer
 
   await new Promise<void>(r => setTimeout(r, 50));
 
-  correctLanePositions(laneBands, services);
+  warnings.push(...correctLanePositions(laneBands, services));
 
   await new Promise<void>(r => setTimeout(r, 50));
 
-  await reapplyArtifacts(extracted, services);
+  warnings.push(...await reapplyArtifacts(extracted, services));
 
   await new Promise<void>(r => setTimeout(r, 50));
 

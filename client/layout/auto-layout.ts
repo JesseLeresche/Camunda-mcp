@@ -48,7 +48,15 @@ export async function layoutDiagramViaAutoLayout(
 
   const hasCollaboration = definitions.rootElements?.some((el: any) => el.$type === 'bpmn:Collaboration');
   const hasLanes = !!process.laneSets?.length;
-  const hasAnnotationsOrGroups = (process.flowElements || []).some(
+  // bpmn:TextAnnotation/bpmn:Group are Artifact subtypes, stored on
+  // bpmn:Process#artifacts — a property entirely separate from
+  // #flowElements (confirmed against the bpmn-moddle schema). Checking
+  // only flowElements meant a diagram with annotations/groups but no
+  // pools/lanes never triggered the composition path at all, silently
+  // taking the plain layoutProcess route instead — which doesn't preserve
+  // Artifact DI, so they'd end up semantically present but invisible on
+  // canvas 100% of the time for exactly this diagram shape.
+  const hasAnnotationsOrGroups = [...(process.flowElements || []), ...(process.artifacts || [])].some(
     (fe: any) => fe.$type === 'bpmn:TextAnnotation' || fe.$type === 'bpmn:Group',
   );
   if (hasCollaboration || hasLanes || hasAnnotationsOrGroups) {

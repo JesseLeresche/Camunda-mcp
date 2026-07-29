@@ -283,7 +283,7 @@ export function addSubprocess(
 
 export function addParticipant(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, bpmnFactory }: BpmnServices
 ) {
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
@@ -299,6 +299,24 @@ export function addParticipant(
     { x, y, width, height },
     rootElement
   );
+
+  // bpmn-js's own CreateParticipantBehavior only auto-wires a bpmn:Process
+  // onto a new participant when it's created directly into a bpmn:Process
+  // root — the "convert this diagram's lone flat process into a
+  // collaboration" case for the *first* pool. Once a Collaboration root
+  // already exists (2nd+ pool), that behavior's guard never fires, so the
+  // participant is created with no processRef at all — confirmed live: the
+  // pool renders, but has no underlying process to hold any flow elements,
+  // silently. Wire it ourselves here, matching what the behavior does for
+  // pool 1, so every pool this tool creates is actually usable.
+  if (!shape.businessObject.processRef) {
+    const definitions = getDefinitions(shape.businessObject, canvas);
+    const process = bpmnFactory.create('bpmn:Process', { isExecutable: true });
+    process.$parent = definitions;
+    if (definitions && !definitions.rootElements) definitions.rootElements = [];
+    definitions?.rootElements.push(process);
+    modeling.updateProperties(shape, { processRef: process });
+  }
 
   if (name) modeling.updateLabel(shape, name);
 
@@ -321,6 +339,20 @@ export function addLane(
 
   const participant = elementRegistry.get(participantId);
   if (!participant) throw new Error(`Participant "${participantId}" not found`);
+
+  // A participant with no linked process (processRef) crashes deep inside
+  // bpmn-js's own BpmnUpdater — its lane/flowNodeRef bookkeeping
+  // (getLaneSet/updateSemanticParent) reads processRef unconditionally,
+  // throwing "Cannot read properties of undefined (reading 'get')" after
+  // the lane shape has already been partially created (confirmed live via
+  // the real stack trace). addParticipant always wires processRef now, so
+  // this can no longer happen for pools created through this plugin — but
+  // guard against it anyway for pools that arrived via import_xml or an
+  // older version of this plugin, with a clear error instead of a
+  // confusing internal crash plus orphaned shape.
+  if (!participant.businessObject.processRef) {
+    throw new Error(`Participant "${participantId}" has no linked process (processRef) — cannot add a lane to it`);
+  }
 
   // Add lane inside the participant
   const lane = modeling.addLane(participant, 'bottom');

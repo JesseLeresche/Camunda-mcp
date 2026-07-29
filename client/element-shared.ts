@@ -39,8 +39,19 @@ export function segmentIntersectsRect(
 
 /**
  * Resolves the parent element for shape creation.
- * If parentId is provided, looks it up in the element registry (must be an expanded subprocess).
- * Otherwise falls back to the canvas root element.
+ * If parentId is provided, looks it up in the element registry — either an
+ * expanded subprocess, or a participant/pool (bpmn-js's own
+ * UpdateFlowNodeRefsBehavior auto-assigns the correct lane by geometric
+ * overlap when a shape is created inside a laned pool, the same mechanism
+ * the Modeler UI relies on for drag-and-drop, so no lane-assignment code is
+ * needed here).
+ * Otherwise falls back to the canvas root element — except when that root
+ * is a bpmn:Collaboration (i.e. the diagram has at least one pool), where a
+ * silent fallback would hand back a Collaboration business object that has
+ * no flowElements array to create into, crashing deep inside bpmn-js after
+ * already mutating diagram state. With exactly one participant that's an
+ * unambiguous default; with 2+ participants there's no correct guess, so
+ * this throws and asks the caller to pass parentId explicitly instead.
  */
 export function resolveParent(
   parentId: string | undefined,
@@ -50,8 +61,11 @@ export function resolveParent(
     const parent = elementRegistry.get(parentId);
     if (!parent) throw new Error(`Parent element "${parentId}" not found`);
     const bo = parent.businessObject;
+    if (bo.$type === 'bpmn:Participant') {
+      return parent;
+    }
     if (bo.$type !== 'bpmn:SubProcess') {
-      throw new Error(`Parent "${parentId}" is a ${bo.$type}, not a bpmn:SubProcess`);
+      throw new Error(`Parent "${parentId}" is a ${bo.$type}, not a bpmn:SubProcess or bpmn:Participant`);
     }
     const isExpanded = parent.isExpanded ?? parent.di?.isExpanded ?? false;
     if (!isExpanded) {
@@ -61,6 +75,15 @@ export function resolveParent(
   }
   const root = canvas.getRootElement();
   if (!root) throw new Error('No diagram is currently open — cannot add elements');
+  if (root.businessObject?.$type === 'bpmn:Collaboration') {
+    const participants = (root.children || []).filter(
+      (c: any) => c.businessObject?.$type === 'bpmn:Participant'
+    );
+    if (participants.length === 1) return participants[0];
+    throw new Error(
+      'Diagram has multiple pools — pass parentId set to the target participant\'s ID to specify which pool the element belongs in'
+    );
+  }
   return root;
 }
 
