@@ -17,7 +17,7 @@ export const addStartEventSchema = z.object({
   name: z.string().default('Start').describe('Label for the Start Event'),
   x: z.number().default(200).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
   eventDefinitionType: z.enum([
     'bpmn:MessageEventDefinition', 'bpmn:SignalEventDefinition', 'bpmn:TimerEventDefinition', 'none',
   ]).default('none').describe('Start event definition type. A process may only have one blank (none) start event — use a typed start event (e.g. Message) to model a second, distinct trigger.'),
@@ -37,7 +37,7 @@ export const addTaskSchema = z.object({
   name: z.string().default('').describe('Label for the task'),
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
   messageRef: z.string().optional().describe('Message name for ReceiveTask (required by Camunda validation) or SendTask (optional). Find-or-creates a bpmn:Message root element with this name.'),
   correlationKey: z.string().optional().describe('FEEL expression (e.g. "=orderId") for ReceiveTask only — required by Camunda validation alongside messageRef so Zeebe can correlate the incoming message to a running process instance.'),
   taskType: z.string().optional().describe('Zeebe job type. Required by Camunda validation for ServiceTask, SendTask, BusinessRuleTask, and ScriptTask — not just ServiceTask. Settable here at creation instead of a follow-up set_properties/patch_element call.'),
@@ -52,7 +52,7 @@ export const addEndEventSchema = z.object({
   name: z.string().default('').describe('Label for the End Event'),
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
 });
 
 /**
@@ -126,7 +126,7 @@ export const addGatewaySchema = z.object({
   name: z.string().default('').describe('Label for the gateway'),
   x: z.number().default(400).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
 });
 
 export const addEventSchema = z.object({
@@ -153,7 +153,7 @@ export const addEventSchema = z.object({
   escalationCode: z.string().optional().describe('escalationCode when find-or-creating the bpmn:Escalation referenced by escalationRef. Defaults to the escalationRef name if omitted.'),
   timerValue: z.string().optional().describe('ISO 8601 timer expression (e.g. PT1H, R/PT5M)'),
   timerType: z.enum(['timeDuration', 'timeCycle', 'timeDate']).optional().describe('Timer type'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process (ignored for BoundaryEvent)'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools. (ignored for BoundaryEvent)'),
 });
 
 export const addSubprocessSchema = z.object({
@@ -166,7 +166,7 @@ export const addSubprocessSchema = z.object({
   height: z.number().default(200).describe('Height'),
   collapsed: z.boolean().default(false).describe('Collapsed sub-process'),
   calledElement: z.string().optional().describe('Process ID to call (for CallActivity)'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
 });
 
 export const setPropertiesSchema = z.object({
@@ -289,7 +289,7 @@ export const addEndEventTypedSchema = z.object({
   name: z.string().default('').describe('Label'),
   x: z.number().default(600).describe('Canvas x coordinate'),
   y: z.number().default(200).describe('Canvas y coordinate'),
-  parentId: z.string().optional().describe('ID of parent expanded subprocess — element is created as a child of that subprocess instead of the root process'),
+  parentId: z.string().optional().describe('ID of a parent expanded subprocess or participant/pool — element is created as a child of that subprocess/pool instead of the root process. Required when the diagram has 2+ pools.'),
   errorRef: z.string().optional().describe('For eventDefinitionType bpmn:ErrorEventDefinition: error name. Find-or-creates a bpmn:Error root element (required by Camunda validation).'),
   errorCode: z.string().optional().describe('errorCode when find-or-creating the bpmn:Error referenced by errorRef. Camunda requires a non-empty errorCode on any error reference; defaults to the errorRef name if omitted.'),
   messageRef: z.string().optional().describe('For eventDefinitionType bpmn:MessageEventDefinition: message name. Find-or-creates a bpmn:Message root element.'),
