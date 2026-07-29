@@ -388,7 +388,6 @@ camunda-mcp/
 ├── menu.js                         # Menu plugin (plain JS, shows server status)
 ├── package.json                    # Dependencies and build scripts
 ├── tsconfig.json                   # TypeScript config for Node.js side (src/ -> dist/)
-├── tsconfig.client.json            # TypeScript config for renderer side (client/)
 ├── webpack.config.js               # Webpack config: bundles client/ -> client/dist/client.js
 ├── dev/
 │   └── layout-tests.ts             # Standalone dev harness for tuning auto-layout options (npm run layout:test)
@@ -408,6 +407,7 @@ camunda-mcp/
 │           ├── facade.ts           # FACADE map + resolveFacade (public tool+operation -> internal tool name)
 │           └── compact.ts          # compactResult (the `compact: true` response trimming)
 ├── client/
+│   ├── tsconfig.json                # TypeScript config for the renderer side, discoverable by editors opening any client/*.ts file directly
 │   ├── client.ts                   # Renderer entry: registers bpmn-js plugin + tab manager
 │   ├── bpmn-tools.ts               # Dispatch hub: TOOL_HANDLERS lookup, dispatchRendererTool(Sync)
 │   ├── element-shared.ts           # Shared element-building helpers (used by elements/ and layout/)

@@ -14,7 +14,7 @@ module.exports = {
         use: {
           loader: 'ts-loader',
           options: {
-            configFile: path.resolve(__dirname, 'tsconfig.client.json')
+            configFile: path.resolve(__dirname, 'client', 'tsconfig.json')
           }
         },
         exclude: /node_modules/
