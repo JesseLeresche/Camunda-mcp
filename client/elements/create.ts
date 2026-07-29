@@ -283,7 +283,7 @@ export function addSubprocess(
 
 export function addParticipant(
   params: Record<string, unknown>,
-  { modeling, canvas }: BpmnServices
+  { modeling, canvas, bpmnFactory }: BpmnServices
 ) {
   const name = (params.name as string) || '';
   const x = (params.x as number) || 400;
@@ -299,6 +299,24 @@ export function addParticipant(
     { x, y, width, height },
     rootElement
   );
+
+  // bpmn-js's own CreateParticipantBehavior only auto-wires a bpmn:Process
+  // onto a new participant when it's created directly into a bpmn:Process
+  // root — the "convert this diagram's lone flat process into a
+  // collaboration" case for the *first* pool. Once a Collaboration root
+  // already exists (2nd+ pool), that behavior's guard never fires, so the
+  // participant is created with no processRef at all — confirmed live: the
+  // pool renders, but has no underlying process to hold any flow elements,
+  // silently. Wire it ourselves here, matching what the behavior does for
+  // pool 1, so every pool this tool creates is actually usable.
+  if (!shape.businessObject.processRef) {
+    const definitions = getDefinitions(shape.businessObject, canvas);
+    const process = bpmnFactory.create('bpmn:Process', { isExecutable: true });
+    process.$parent = definitions;
+    if (definitions && !definitions.rootElements) definitions.rootElements = [];
+    definitions?.rootElements.push(process);
+    modeling.updateProperties(shape, { processRef: process });
+  }
 
   if (name) modeling.updateLabel(shape, name);
 
