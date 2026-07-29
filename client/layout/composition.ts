@@ -94,6 +94,20 @@ export function extractComposition(definitions: any): ExtractedComposition {
       if (!collectArtifact(fe)) kept.push(fe);
     }
     processBo.flowElements = kept;
+
+    // TextAnnotation/Group/Association are Artifact subtypes, stored on
+    // bpmn:Process#artifacts — a property separate from #flowElements (the
+    // collaboration-level loop below already reads collaboration.artifacts
+    // correctly; this was the missing per-participant equivalent, so any
+    // annotation/group attached directly to a specific pool's process
+    // rather than the collaboration root was silently invisible to
+    // extraction entirely, never even attempted for restoration).
+    const keptArtifacts: any[] = [];
+    for (const art of processBo.artifacts || []) {
+      if (!collectArtifact(art)) keptArtifacts.push(art);
+    }
+    processBo.artifacts = keptArtifacts;
+
     processBo.laneSets = [];
 
     participants.push({ participantId: participantBo?.id ?? null, participantName: participantBo?.name, processBo, laneInfos });
