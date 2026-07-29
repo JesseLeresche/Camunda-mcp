@@ -340,6 +340,20 @@ export function addLane(
   const participant = elementRegistry.get(participantId);
   if (!participant) throw new Error(`Participant "${participantId}" not found`);
 
+  // A participant with no linked process (processRef) crashes deep inside
+  // bpmn-js's own BpmnUpdater — its lane/flowNodeRef bookkeeping
+  // (getLaneSet/updateSemanticParent) reads processRef unconditionally,
+  // throwing "Cannot read properties of undefined (reading 'get')" after
+  // the lane shape has already been partially created (confirmed live via
+  // the real stack trace). addParticipant always wires processRef now, so
+  // this can no longer happen for pools created through this plugin — but
+  // guard against it anyway for pools that arrived via import_xml or an
+  // older version of this plugin, with a clear error instead of a
+  // confusing internal crash plus orphaned shape.
+  if (!participant.businessObject.processRef) {
+    throw new Error(`Participant "${participantId}" has no linked process (processRef) — cannot add a lane to it`);
+  }
+
   // Add lane inside the participant
   const lane = modeling.addLane(participant, 'bottom');
 
