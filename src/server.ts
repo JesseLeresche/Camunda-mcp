@@ -17,6 +17,7 @@ import { dispatch } from './tools/handlers';
 import { updateMenuStatus } from './menu';
 import { setupRendererBridge } from './renderer-bridge';
 import { RESOURCES, readResource } from './resources/registry';
+import { reindex } from './knowledge-base/reindex';
 
 // Electron is only available at runtime inside the Modeler — no @types/electron installed.
 // All electron access is via dynamic require() wrapped in try/catch.
@@ -62,6 +63,21 @@ function listenOnPort(
  * 4. Initializes the Electron IPC bridge (if running inside the Modeler).
  */
 export async function startMcpServer(): Promise<void> {
+  // --- Knowledge base: build/refresh the FTS index once at plugin load ---
+  // (a live file watcher is added in a later phase; this covers content
+  // that changed while the plugin wasn't running). Wrapped so a KB failure
+  // never blocks BPMN tooling from starting.
+  try {
+    const { indexed, removed, skipped, unsupported } = reindex();
+    console.log(
+      `${LOG_PREFIX} Knowledge base reindexed: ${indexed} indexed, ${removed} removed, `
+      + `${skipped} unchanged, ${unsupported} unsupported format(s) skipped`
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
+  }
+
   // --- Renderer bridge setup (must happen before tool calls arrive) ---
   setupRendererBridge();
 

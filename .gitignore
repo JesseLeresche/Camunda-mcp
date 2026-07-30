@@ -5,3 +5,4 @@ client/dist/
 *.log
 .idea
 .kiro
+.data/

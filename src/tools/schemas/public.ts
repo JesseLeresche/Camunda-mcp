@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   buildProcessSchema, batchOperationsSchema, createDmnSchema, deployProcessSchema,
+  kbSearchSchema,
 } from './primitives';
 
 // ===========================================================================
@@ -284,6 +285,15 @@ export const tools: ToolDefinition[] = [
     name: 'deploy_process',
     description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.',
     inputSchema: deployProcessSchema,
+    executeLocal: true,
+  },
+  {
+    name: 'kb_search',
+    description:
+      'Full-text keyword search (BM25-ranked) over the knowledge base\'s ingested doc corpus '
+      + '(Markdown today; PDF/BPMN XML/OCR\'d images from a later phase) from docs/knowledge-base/. '
+      + 'Returns cited, highlighted excerpts, not full documents.',
+    inputSchema: kbSearchSchema,
     executeLocal: true,
   },
 ];

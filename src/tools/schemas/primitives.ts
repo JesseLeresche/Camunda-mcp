@@ -1,6 +1,18 @@
 import { z } from 'zod';
 
 /**
+ * Zod schema for the kb_search tool.
+ * Full-text keyword search over the knowledge base's ingested doc corpus.
+ */
+export const kbSearchSchema = z.object({
+  query: z.string().describe(
+    'Search text — SQLite FTS5 query syntax: plain words match any/all terms, '
+    + '"quoted phrase" for an exact phrase, prefix* for prefix matching, AND/OR/NOT for boolean logic.'
+  ),
+  limit: z.number().int().positive().max(20).optional().default(5).describe('Max results to return (default 5)'),
+});
+
+/**
  * Zod schema for the create_model tool.
  * Creates a new empty BPMN diagram tab in the Camunda Desktop Modeler.
  */

@@ -400,12 +400,12 @@ describe('compact flag', () => {
 // Registry tests
 // ---------------------------------------------------------------------------
 describe('tools registry', () => {
-  it('publishes the consolidated set of 12 tools', () => {
-    expect(tools).toHaveLength(12);
+  it('publishes the consolidated set of 12 tools plus kb_search', () => {
+    expect(tools).toHaveLength(13);
     expect(tools.map(t => t.name).sort()).toEqual([
       'add_element', 'batch_operations', 'build_process', 'connect', 'create_dmn',
-      'deploy_process', 'layout', 'manage_diagram', 'manage_element', 'manage_form',
-      'query_diagram', 'update_element',
+      'deploy_process', 'kb_search', 'layout', 'manage_diagram', 'manage_element',
+      'manage_form', 'query_diagram', 'update_element',
     ]);
   });
 
@@ -425,9 +425,9 @@ describe('tools registry', () => {
     }
   });
 
-  it('local tools are create_dmn and deploy_process', () => {
+  it('local tools are create_dmn, deploy_process, and kb_search', () => {
     const localTools = tools.filter(t => t.executeLocal).map(t => t.name).sort();
-    expect(localTools).toEqual(['create_dmn', 'deploy_process']);
+    expect(localTools).toEqual(['create_dmn', 'deploy_process', 'kb_search']);
   });
 });
 
