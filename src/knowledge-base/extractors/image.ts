@@ -5,13 +5,16 @@
  * "Future considerations" for the vision-model alternative, deliberately
  * not built).
  *
- * The OCR engine itself (tesseract.js-core, WASM) is a normal local npm
- * dependency — no network involved. The one exception: the English
- * language-training data (~15MB) is not bundled in the npm package and
- * defaults to a one-time download from jsdelivr's CDN the first time an
- * image is processed, cached locally (via tesseract.js's own cache) for
- * every use after that — not a per-file or per-query cost, just a one-time
- * bootstrap the first time this extractor actually runs.
+ * The English language-training data (assets/tessdata/eng.traineddata,
+ * ~5MB) is vendored directly into this repo/package rather than left to
+ * tesseract.js's default behavior (a one-time download from jsdelivr's CDN
+ * on first use). Passing `cachePath` pointing at that folder makes
+ * tesseract.js treat it as an already-populated cache, so it's read
+ * straight off disk and the CDN code path is never reached — zero network
+ * calls, not even a one-time bootstrap, consistent with every other
+ * extractor in this pipeline. Re-vendor by deleting the file and letting
+ * tesseract.js re-download it once (it writes back to `cachePath`) if a
+ * newer trained-data release is ever needed.
  */
 
 import * as path from 'path';
@@ -22,8 +25,10 @@ export interface ExtractedDoc {
   body: string;
 }
 
+const TESSDATA_DIR = path.join(__dirname, '..', '..', '..', 'assets', 'tessdata');
+
 export async function extractImage(filePath: string): Promise<ExtractedDoc> {
-  const worker = await createWorker('eng');
+  const worker = await createWorker('eng', 1, { cachePath: TESSDATA_DIR });
   try {
     const { data } = await worker.recognize(filePath);
     const title = path.basename(filePath, path.extname(filePath));
