@@ -7,10 +7,19 @@
 import * as path from 'path';
 import type Database from 'better-sqlite3';
 import { extractMarkdown, type ExtractedDoc } from './extractors/markdown';
+import { extractPdf } from './extractors/pdf';
+import { extractBpmnXml } from './extractors/bpmn-xml';
+import { extractImage } from './extractors/image';
 
-/** One extractor per supported format — Phase 3 adds .pdf, .bpmn/.xml, .png/.jpg here. */
-const EXTRACTORS: Record<string, (filePath: string) => ExtractedDoc> = {
+/** One extractor per supported format, keyed by file extension. */
+const EXTRACTORS: Record<string, (filePath: string) => ExtractedDoc | Promise<ExtractedDoc>> = {
   '.md': extractMarkdown,
+  '.pdf': extractPdf,
+  '.bpmn': extractBpmnXml,
+  '.xml': extractBpmnXml,
+  '.png': extractImage,
+  '.jpg': extractImage,
+  '.jpeg': extractImage,
 };
 
 export function isSupportedFormat(filePath: string): boolean {
@@ -22,12 +31,12 @@ export function isSupportedFormat(filePath: string): boolean {
  * source file, then inserts a fresh one. Silently no-ops on unsupported
  * formats so reindex()'s directory walk doesn't need to pre-filter.
  */
-export function ingestFile(db: Database.Database, filePath: string, mtimeMs: number): void {
+export async function ingestFile(db: Database.Database, filePath: string, mtimeMs: number): Promise<void> {
   const ext = path.extname(filePath).toLowerCase();
   const extractor = EXTRACTORS[ext];
   if (!extractor) return;
 
-  const { title, body } = extractor(filePath);
+  const { title, body } = await extractor(filePath);
 
   removeFile(db, filePath);
 

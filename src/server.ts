@@ -65,18 +65,24 @@ function listenOnPort(
 export async function startMcpServer(): Promise<void> {
   // --- Knowledge base: build/refresh the FTS index once at plugin load ---
   // (a live file watcher is added in a later phase; this covers content
-  // that changed while the plugin wasn't running). Wrapped so a KB failure
-  // never blocks BPMN tooling from starting.
-  try {
-    const { indexed, removed, skipped, unsupported } = reindex();
-    console.log(
-      `${LOG_PREFIX} Knowledge base reindexed: ${indexed} indexed, ${removed} removed, `
-      + `${skipped} unchanged, ${unsupported} unsupported format(s) skipped`
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
-  }
+  // that changed while the plugin wasn't running). Deliberately NOT
+  // awaited: PDF/OCR extraction can take real time (OCR especially, on a
+  // first-ever run that needs a one-time language-data download — see
+  // extractors/image.ts), and none of that should delay BPMN tooling or
+  // the MCP server itself from becoming available. kb_search may return
+  // incomplete results for the few seconds this takes on a large corpus;
+  // any KB failure is caught here and logged, never thrown.
+  reindex()
+    .then(({ indexed, removed, skipped, unsupported }) => {
+      console.log(
+        `${LOG_PREFIX} Knowledge base reindexed: ${indexed} indexed, ${removed} removed, `
+        + `${skipped} unchanged, ${unsupported} unsupported format(s) skipped`
+      );
+    })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
+    });
 
   // --- Renderer bridge setup (must happen before tool calls arrive) ---
   setupRendererBridge();

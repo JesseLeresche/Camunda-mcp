@@ -30,7 +30,7 @@ function walk(dir: string): string[] {
   return out;
 }
 
-export function reindex(): ReindexResult {
+export async function reindex(): Promise<ReindexResult> {
   const db = getDb();
   const files = walk(KB_SOURCE_DIR);
 
@@ -60,7 +60,7 @@ export function reindex(): ReindexResult {
     }
 
     try {
-      ingestFile(db, file, mtimeMs);
+      await ingestFile(db, file, mtimeMs);
       indexed++;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

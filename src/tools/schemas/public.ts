@@ -290,9 +290,15 @@ export const tools: ToolDefinition[] = [
   {
     name: 'kb_search',
     description:
-      'Full-text keyword search (BM25-ranked) over the knowledge base\'s ingested doc corpus '
-      + '(Markdown today; PDF/BPMN XML/OCR\'d images from a later phase) from docs/knowledge-base/. '
-      + 'Returns cited, highlighted excerpts, not full documents.',
+      'Keyword search over the team knowledge base built from docs/knowledge-base/. Each file dropped '
+      + 'there (.md, .pdf, .bpmn/.xml, .png/.jpg) is ingested whole as one "document" — its whole text is '
+      + 'extracted (Markdown as-is, PDF text layer, BPMN/XML element names + documentation, OCR for images) '
+      + 'and indexed in a SQLite FTS5 full-text index; that set of indexed documents is the "corpus" this '
+      + 'tool searches. Ranks matches with BM25 (weighs by query-term frequency in the document, offset by '
+      + 'how common that term is across the whole corpus, normalized for document length), not semantic/'
+      + 'embedding similarity — so it finds documents containing your query words, not just related in '
+      + 'meaning. Returns, per result, the source file, format, and a highlighted snippet around the match '
+      + '(not the full document) so the agent gets a citable excerpt without a separate fetch.',
     inputSchema: kbSearchSchema,
     executeLocal: true,
   },
