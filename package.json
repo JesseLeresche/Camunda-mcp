@@ -34,6 +34,7 @@
     "dist/",
     "client/dist/",
     "docs/",
+    "BPMN-BEST-PRACTICES.md",
     "README.md",
     "LICENSE"
   ],

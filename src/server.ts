@@ -16,6 +16,7 @@ import { tools } from './tools/registry';
 import { dispatch } from './tools/handlers';
 import { updateMenuStatus } from './menu';
 import { setupRendererBridge } from './renderer-bridge';
+import { RESOURCES, readResource } from './resources/registry';
 
 // Electron is only available at runtime inside the Modeler — no @types/electron installed.
 // All electron access is via dynamic require() wrapped in try/catch.
@@ -117,6 +118,17 @@ export async function startMcpServer(): Promise<void> {
             };
           }
         });
+      }
+
+      // Register knowledge base resources (Tier A — curated guides) on this
+      // per-request server instance, same shape as the tool loop above.
+      for (const res of RESOURCES) {
+        (server as any).registerResource(res.name, res.uri, {
+          description: res.description,
+          mimeType: res.mimeType,
+        }, async (uri: URL) => ({
+          contents: [{ uri: uri.href, mimeType: res.mimeType, text: readResource(res) }],
+        }));
       }
 
       const transport = new StreamableHTTPServerTransport({

@@ -380,6 +380,17 @@ Tool implementations are split across a few layers:
 
 3. **Renderer implementation** -- For renderer tools, implement the bpmn-js API call in the relevant file under `client/elements/` (`create.ts`, `mutate.ts`, `query.ts`, `forms.ts`), `client/diagram-io.ts`, or `client/batch.ts`, using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`. Then register it in the `TOOL_HANDLERS` lookup (and `SYNC_TOOL_NAMES` if it should be callable inside a compound command) in `client/bpmn-tools.ts`.
 
+### Adding a knowledge base guide
+
+Curated guides (like `BPMN-BEST-PRACTICES.md`) are served over MCP's native Resources protocol (`resources/list` / `resources/read`) via `src/resources/registry.ts` -- any MCP client can fetch them directly, not just an editor session instructed to read a specific file.
+
+1. Write the guide as a Markdown file (put it wherever makes sense -- `BPMN-BEST-PRACTICES.md` lives at the repo root since it's referenced elsewhere too).
+2. Add a `ResourceDescriptor` entry to the `RESOURCES` array in `src/resources/registry.ts`: a unique `uri` (`camunda-mcp://guides/{slug}`), a `name`, a one-line `description`, `mimeType: 'text/markdown'`, and the absolute `filePath`.
+3. If the file isn't already covered by `package.json`'s `files` array, add it there too -- otherwise it won't ship in an installed copy of the plugin.
+4. Rebuild and restart the Modeler, then verify with `resources/list` (should include the new URI) and `resources/read` (should return the file's current content).
+
+No other code changes needed -- the registry loop in `src/server.ts` picks up every entry automatically.
+
 ## Project Structure
 
 ```
@@ -395,6 +406,8 @@ camunda-mcp/
 │   ├── server.ts                   # MCP HTTP server (Express + SDK)
 │   ├── renderer-bridge.ts          # Electron executeJavaScript() bridge to the renderer
 │   ├── menu.ts                     # Menu status tracking (updateMenuStatus, getMenuLabel)
+│   ├── resources/
+│   │   └── registry.ts             # Knowledge base Tier A: curated guides served over resources/list, resources/read
 │   └── tools/
 │       ├── registry.ts             # Thin barrel: re-exports schemas/primitives.ts + schemas/public.ts
 │       ├── schemas/
