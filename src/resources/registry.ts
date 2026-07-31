@@ -23,6 +23,10 @@ export interface ResourceDescriptor {
   filePath: string;
 }
 
+// src/resources/registry.ts -> dist/resources/registry.js at runtime; two levels up from
+// dist/resources/ reaches the repo root.
+const ROOT_DIR = path.join(__dirname, '..', '..');
+
 export const RESOURCES: ResourceDescriptor[] = [
   {
     uri: 'camunda-mcp://guides/bpmn-best-practices',
@@ -31,9 +35,27 @@ export const RESOURCES: ResourceDescriptor[] = [
       'Coordinate systems, flow routing, and layout rules to follow before creating or ' +
       'modifying any BPMN diagram.',
     mimeType: 'text/markdown',
-    // src/resources/registry.ts -> dist/resources/registry.js at runtime;
-    // two levels up from dist/resources/ reaches the repo root.
-    filePath: path.join(__dirname, '..', '..', 'BPMN-BEST-PRACTICES.md'),
+    filePath: path.join(ROOT_DIR, 'BPMN-BEST-PRACTICES.md'),
+  },
+  {
+    uri: 'camunda-mcp://guides/bpmn-gateways',
+    name: 'BPMN Gateways: Which One to Use',
+    description:
+      'Exclusive vs parallel vs inclusive vs event-based gateways — when to use each, and the ' +
+      'add_element / connect parameters each one needs.',
+    mimeType: 'text/markdown',
+    filePath: path.join(ROOT_DIR, 'docs', 'knowledge-base', 'camunda-docs', 'bpmn-gateways.md'),
+  },
+  {
+    uri: 'camunda-mcp://guides/bpmn-error-and-escalation-events',
+    name: 'BPMN Error & Escalation Events',
+    description:
+      'Interrupting error events vs non-interrupting escalation events, errorCode/escalationCode ' +
+      'matching, and business-vs-technical-error framing.',
+    mimeType: 'text/markdown',
+    filePath: path.join(
+      ROOT_DIR, 'docs', 'knowledge-base', 'camunda-docs', 'bpmn-error-and-escalation-events.md'
+    ),
   },
 ];
 
