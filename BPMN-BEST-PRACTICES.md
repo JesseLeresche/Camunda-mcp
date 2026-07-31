@@ -28,6 +28,12 @@ To center-align a task with an event at target center Y:
 - **Vertical gap for parallel branches:** 120px above/below the center line
 - **Rejection/error paths:** 180px below the main flow
 - **Annotations:** 100–130px above the element they annotate
+- **Tasks with a named boundary event:** widen the gap to the *next* element to 220–240px, not
+  the standard 160–200px. A boundary event's name label renders beside/below the event itself,
+  competing for the same horizontal band as the next flow node's label — at standard spacing the
+  two labels crowd or nearly touch (observed with a task carrying a named error boundary event
+  followed 190px later by a labeled intermediate event). Either widen the gap or keep the boundary
+  event unlabeled if the icon (timer/error/etc.) is self-explanatory in context.
 
 ### Standard Layout
 
@@ -136,6 +142,12 @@ When using `auto_layout` or positioning elements around gateway branches:
 [X] Split ——————————————→ [+] Continue
        "Existing Client"
 ```
+
+If the detour has its *own* rejoin/rejection gateway (e.g. an approval check on the detour task)
+and that gateway's rejection path drops straight down to an end event below the main line, expect
+that vertical line to cross the main horizontal flow at one point. That's a normal single line
+crossing, not element overlap — don't spend effort routing around it; it reads fine as long as it
+doesn't land exactly on another element or label.
 
 ---
 
