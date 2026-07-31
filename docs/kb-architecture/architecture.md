@@ -69,7 +69,7 @@ knowledge base**.
   the file stays exactly as maintained today.
 - **KB Search Engine (Tier B1)** (`src/knowledge-base/db.ts` + `kb_search` tool) — owns the SQLite
   FTS5 index and answers search queries with cited, highlighted excerpts.
-- **KB File Watcher (chokidar)** (`src/knowledge-base/reindex.ts`'s live trigger) — watches
+- **KB File Watcher (chokidar)** (`src/knowledge-base/watcher.ts`) — watches
   `docs/knowledge-base/` while the plugin is running and triggers reindexing automatically.
 
 Every call — BPMN tools, guide resources, and KB search alike — passes through the same MCP
@@ -94,15 +94,24 @@ One extractor per type, all local and free — no external API calls, no per-fil
 | `.bpmn` / `.xml` | element names, labels, `<documentation>` text pulled directly from the XML — exact, not guessed | none — the structure is small and predictable enough that a parsing library isn't needed |
 | `.png` / `.jpg` (a photo or screenshot of a diagram) | OCR extracts visible text labels | [`tesseract.js`](https://www.npmjs.com/package/tesseract.js) (actively maintained, pure WASM, fully local) |
 
+`tesseract.js`'s default behavior downloads its English trained-data file (~5MB) from jsdelivr's
+CDN the first time OCR runs. To keep this extractor's zero-network-calls property genuinely zero
+(not just a one-time bootstrap), that file is vendored directly into the repo/package at
+`assets/tessdata/eng.traineddata` and `image.ts` points `cachePath` at it — tesseract.js reads it
+straight off disk and never constructs a CDN URL. To pick up a newer trained-data release later,
+delete the vendored file and let tesseract.js download+cache a fresh one once, then re-vendor it.
+
 ### Two reindex triggers, one shared function
 
 - **Live, via `chokidar@4`** (pinned to v4, not v5 — v5 is ESM-only and this project's
-  `tsconfig.json` is CommonJS): watches `docs/knowledge-base/` while the plugin is running,
-  debounced via `awaitWriteFinish` so one save doesn't trigger several redundant passes.
+  `tsconfig.json` is CommonJS): watches `docs/knowledge-base/` while the plugin is running.
+  `awaitWriteFinish` waits for an individual file's write to actually finish before firing its
+  event, and a short additional debounce on top of that coalesces a burst of events (e.g. several
+  files landing at once from a `git pull`) into a single `reindex()` pass.
 - **At plugin load**: covers content that changed while the plugin wasn't running (e.g. pulled
   via git before Modeler was launched).
 
-Both call the same manifest-diff `reindex()` function (mtime/hash per source file), which only
+Both call the same manifest-diff `reindex()` function (mtime per source file), which only
 re-processes files that actually changed. **Correctness requirement this creates:** the generated
 `.sqlite` file and its manifest must live *outside* `docs/knowledge-base/` — if the database were
 inside the watched folder, the watcher would see its own writes and loop.
