@@ -139,6 +139,38 @@ When using `auto_layout` or positioning elements around gateway branches:
 
 ---
 
+## Known Tool Gotchas
+
+### Deleting an element can leave a stale "bypass" flow
+
+If an element sits in the middle of a chain (`A -> B -> C`) and you delete `B` (e.g. to fix a
+misconfigured event created with the wrong `eventDefinitionType`), the delete can leave behind a
+stale sequence flow connecting `A` directly to `C`, bypassing where `B` used to be. This is easy to
+miss because the diagram still "looks" connected — the bypass flow renders as a long straight or
+crossing line that overlaps other elements.
+
+After any `delete` of a mid-chain element, run `query_diagram {operation: "list"}` and check the
+`incoming`/`outgoing` arrays of the old neighbors for an unexpected flow directly between them, and
+delete it if found. Prefer building the correct element right the first time (e.g. set
+`eventDefinitionType` at the top level of the `build_process`/`add_element` call, not nested under
+`properties`) to avoid the delete-and-recreate path entirely.
+
+### `layout {operation: "auto"}` can invert which branch reads as the happy path
+
+The branch-aware auto-layout is convenient but not guaranteed to preserve which exclusive-gateway
+branch is the "straight line" one. On a diagram with hand-placed coordinates, calling `layout auto`
+has been observed to flatten the true happy-path branch into a below-the-line loop and promote the
+exception branch to the center line instead — the opposite of "Happy Path First" below — while also
+introducing new crossing lines.
+
+Prefer manual coordinate placement (per this doc) plus `layout {operation: "validate", autoFix:
+true}` for targeted fixes (it only nudges waypoints to resolve specific flagged issues like a flow
+crossing an element, it does not reposition/re-fan whole branches). Only reach for `layout auto` on
+a diagram that has no hand-authored layout yet, and re-verify the happy path is still the straight
+line afterward.
+
+---
+
 ## Labeling
 
 - **Exclusive gateway flows:** Always label with the condition (e.g., "Approved", "Rejected")
