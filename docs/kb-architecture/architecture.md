@@ -2,7 +2,7 @@
 
 Tracks the design behind [#24](https://github.com/JesseLeresche/Camunda-mcp/issues/24). This
 document explains what exists, why it's shaped this way, and how the pieces actually talk to
-each other — the three diagrams below are the same model, exported from
+each other — the four diagrams below are the same model, exported from
 [`Camunda-MCP-KB.archimate`](./Camunda-MCP-KB.archimate) (open it directly in
 [Archi](https://www.archimatetool.com/) to explore or edit).
 
@@ -133,6 +133,37 @@ base before acting, (2) gets relevant guidance back, (3) calls a BPMN tool infor
 guidance, (4) gets the tool's result, and (5) reports the updated diagram back to the team member.
 This is the payoff of the whole design — the knowledge base isn't a side feature, it's meant to be
 consulted as a normal part of every non-trivial diagram operation.
+
+## Database schema
+
+![Knowledge Base Database Schema](./kb-db-schema-view.png)
+
+Three tables, all created by `src/knowledge-base/db.ts`:
+
+- **`documents`** — one row per ingested file: `id` (primary key), `title`, `source_file` (unique —
+  this is the manifest-diff key), `source_format`, `mtime_ms` (the column `reindex()` compares
+  against disk to decide what changed), `updated_at`.
+- **`documents_fts`** — the FTS5 virtual table that actually gets searched (`title`, `body`).
+  Its `rowid` is set manually to the matching `documents.id` on insert, rather than left to
+  auto-increment — that's what makes a `kb_search` result traceable back to a specific
+  `documents` row (source file, format) by a plain rowid join, no separate foreign-key column
+  needed.
+- **`schema_meta`** — a single `key`/`value` row holding the current schema version. On a
+  mismatch at startup, `documents` and `documents_fts` are dropped and rebuilt from scratch rather
+  than migrated in place — safe because nothing in this database is irreplaceable, it's fully
+  regenerable from `docs/knowledge-base/`.
+
+If you open `knowledge-base.sqlite` in an external viewer, you'll also see `documents_fts_data`,
+`documents_fts_idx`, `documents_fts_docsize`, and `documents_fts_config` — these are FTS5's own
+internal shadow tables, auto-generated alongside `documents_fts`. Nothing in this codebase creates
+or touches them directly; they're SQLite's implementation detail, not a fourth table to document.
+
+For the full schema writeup (every column, the FTS5 shadow tables SQLite auto-generates, and why
+`documents_fts` links back to `documents` by rowid instead of a foreign key) see
+[issue #25's first comment](https://github.com/JesseLeresche/Camunda-mcp/issues/25#issuecomment-5132015423).
+For what FTS5 and BM25 actually are and how they work, see
+[the follow-up comment](https://github.com/JesseLeresche/Camunda-mcp/issues/25#issuecomment-5132035808)
+and the [Why FTS5, not vector search](#why-fts5-not-vector-search) section above.
 
 ## Key dependencies
 
