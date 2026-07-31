@@ -18,6 +18,7 @@ import { updateMenuStatus } from './menu';
 import { setupRendererBridge } from './renderer-bridge';
 import { RESOURCES, readResource } from './resources/registry';
 import { reindex } from './knowledge-base/reindex';
+import { startKnowledgeBaseWatcher, stopKnowledgeBaseWatcher } from './knowledge-base/watcher';
 
 // Electron is only available at runtime inside the Modeler — no @types/electron installed.
 // All electron access is via dynamic require() wrapped in try/catch.
@@ -83,6 +84,12 @@ export async function startMcpServer(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
     });
+
+  // --- Knowledge base: live reindex while the plugin is running ---
+  // Watches docs/knowledge-base/ so a file dropped in, edited, or removed
+  // while Modeler is already running is picked up without a restart —
+  // the second of reindex()'s two triggers (see reindex.ts).
+  startKnowledgeBaseWatcher();
 
   // --- Renderer bridge setup (must happen before tool calls arrive) ---
   setupRendererBridge();
@@ -220,6 +227,11 @@ function registerShutdownHook(): void {
 
   app.on('before-quit', () => {
     console.log(`${LOG_PREFIX} Shutting down MCP server...`);
+
+    stopKnowledgeBaseWatcher().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`${LOG_PREFIX} Failed to stop knowledge base watcher:`, message);
+    });
 
     if (httpServer) {
       httpServer.close(() => {
