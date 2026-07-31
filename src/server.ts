@@ -16,6 +16,9 @@ import { tools } from './tools/registry';
 import { dispatch } from './tools/handlers';
 import { updateMenuStatus } from './menu';
 import { setupRendererBridge } from './renderer-bridge';
+import { RESOURCES, readResource } from './resources/registry';
+import { reindex } from './knowledge-base/reindex';
+import { startKnowledgeBaseWatcher, stopKnowledgeBaseWatcher } from './knowledge-base/watcher';
 
 // Electron is only available at runtime inside the Modeler — no @types/electron installed.
 // All electron access is via dynamic require() wrapped in try/catch.
@@ -61,6 +64,33 @@ function listenOnPort(
  * 4. Initializes the Electron IPC bridge (if running inside the Modeler).
  */
 export async function startMcpServer(): Promise<void> {
+  // --- Knowledge base: build/refresh the FTS index once at plugin load ---
+  // (a live file watcher is added in a later phase; this covers content
+  // that changed while the plugin wasn't running). Deliberately NOT
+  // awaited: PDF/OCR extraction can take real time (OCR especially, on a
+  // first-ever run that needs a one-time language-data download — see
+  // extractors/image.ts), and none of that should delay BPMN tooling or
+  // the MCP server itself from becoming available. kb_search may return
+  // incomplete results for the few seconds this takes on a large corpus;
+  // any KB failure is caught here and logged, never thrown.
+  reindex()
+    .then(({ indexed, removed, skipped, unsupported }) => {
+      console.log(
+        `${LOG_PREFIX} Knowledge base reindexed: ${indexed} indexed, ${removed} removed, `
+        + `${skipped} unchanged, ${unsupported} unsupported format(s) skipped`
+      );
+    })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
+    });
+
+  // --- Knowledge base: live reindex while the plugin is running ---
+  // Watches docs/knowledge-base/ so a file dropped in, edited, or removed
+  // while Modeler is already running is picked up without a restart —
+  // the second of reindex()'s two triggers (see reindex.ts).
+  startKnowledgeBaseWatcher();
+
   // --- Renderer bridge setup (must happen before tool calls arrive) ---
   setupRendererBridge();
 
@@ -117,6 +147,17 @@ export async function startMcpServer(): Promise<void> {
             };
           }
         });
+      }
+
+      // Register knowledge base resources (Tier A — curated guides) on this
+      // per-request server instance, same shape as the tool loop above.
+      for (const res of RESOURCES) {
+        (server as any).registerResource(res.name, res.uri, {
+          description: res.description,
+          mimeType: res.mimeType,
+        }, async (uri: URL) => ({
+          contents: [{ uri: uri.href, mimeType: res.mimeType, text: readResource(res) }],
+        }));
       }
 
       const transport = new StreamableHTTPServerTransport({
@@ -186,6 +227,11 @@ function registerShutdownHook(): void {
 
   app.on('before-quit', () => {
     console.log(`${LOG_PREFIX} Shutting down MCP server...`);
+
+    stopKnowledgeBaseWatcher().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`${LOG_PREFIX} Failed to stop knowledge base watcher:`, message);
+    });
 
     if (httpServer) {
       httpServer.close(() => {

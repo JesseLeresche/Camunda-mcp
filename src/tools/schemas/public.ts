@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   buildProcessSchema, batchOperationsSchema, createDmnSchema, deployProcessSchema,
+  kbSearchSchema,
 } from './primitives';
 
 // ===========================================================================
@@ -284,6 +285,21 @@ export const tools: ToolDefinition[] = [
     name: 'deploy_process',
     description: 'Deploys a BPMN process to a Camunda 8 Zeebe cluster. Requires ZEEBE_ADDRESS, ZEEBE_CLIENT_ID, ZEEBE_CLIENT_SECRET env vars.',
     inputSchema: deployProcessSchema,
+    executeLocal: true,
+  },
+  {
+    name: 'kb_search',
+    description:
+      'Keyword search over the team knowledge base built from docs/knowledge-base/. Each file dropped '
+      + 'there (.md, .pdf, .bpmn/.xml, .png/.jpg) is ingested whole as one "document" — its whole text is '
+      + 'extracted (Markdown as-is, PDF text layer, BPMN/XML element names + documentation, OCR for images) '
+      + 'and indexed in a SQLite FTS5 full-text index; that set of indexed documents is the "corpus" this '
+      + 'tool searches. Ranks matches with BM25 (weighs by query-term frequency in the document, offset by '
+      + 'how common that term is across the whole corpus, normalized for document length), not semantic/'
+      + 'embedding similarity — so it finds documents containing your query words, not just related in '
+      + 'meaning. Returns, per result, the source file, format, and a highlighted snippet around the match '
+      + '(not the full document) so the agent gets a citable excerpt without a separate fetch.',
+    inputSchema: kbSearchSchema,
     executeLocal: true,
   },
 ];

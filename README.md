@@ -10,6 +10,8 @@ This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.
 
 The plugin ships with **12 resource-oriented tools** covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms. Most tools select behaviour via an `operation` enum (e.g. `add_element {operation: "task"}`).
 
+It also ships a **knowledge base**: a small set of curated guides available over MCP's native Resources protocol, plus a searchable, team-contributed corpus (Markdown, PDF, BPMN/XML, and OCR'd diagram images) via the `kb_search` tool — see [Adding a knowledge base guide](#adding-a-knowledge-base-guide) and [Adding to the knowledge base](#adding-to-the-knowledge-base).
+
 **Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `update_element {operation: "properties"}` action updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `query_diagram {operation: "list"}` action supports field selection and subprocess filtering.
 
 **Undo/Redo support:** All tool operations integrate with the Modeler's command stack. Compound operations (`build_process`, `layout {operation: "auto"}`, `batch_operations`) are grouped into a single undo step — press Ctrl+Z once to undo an entire process build or layout change.
@@ -143,6 +145,7 @@ Common params: `diagramId`, `elementId`.
 | `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple **internal primitive** operations in one undoable call. `tool` uses internal primitive names (e.g. `move_element`, `connect_elements`), not the consolidated public tool names. Use `"$ref:N"` to reference the result of operation N. |
 | `create_dmn` | `name`, `tableName`, `hitPolicy` (UNIQUE/FIRST/…), `inputs`, `outputs` | Creates a DMN decision table file. |
 | `deploy_process` | `filePath`, `clusterUrl`, `clientId`, `clientSecret` | Deploys a BPMN process to Camunda 8 Zeebe. Requires `ZEEBE_ADDRESS`, `ZEEBE_CLIENT_ID`, `ZEEBE_CLIENT_SECRET` env vars. |
+| `kb_search` | `query`, `limit` (default 5, max 20) | Keyword search (BM25-ranked) over the knowledge base corpus in `docs/knowledge-base/` — Markdown, PDF, BPMN/XML, and OCR'd images. Returns cited, highlighted excerpts per result, not full documents. See [Adding to the knowledge base](#adding-to-the-knowledge-base). |
 
 ### Authentication
 
@@ -374,11 +377,32 @@ After making changes, hot-reload inside the Modeler with **F12** (open DevTools)
 
 Tool implementations are split across a few layers:
 
-1. **Schema** -- Define a Zod input schema in `src/tools/schemas/primitives.ts` (internal per-tool schemas) or `src/tools/schemas/public.ts` (one of the 9 consolidated public tools). `src/tools/registry.ts` is a thin barrel re-exporting both, so no changes are needed there.
+1. **Schema** -- Define a Zod input schema in `src/tools/schemas/primitives.ts` (internal per-tool schemas) or `src/tools/schemas/public.ts` (one of the 12 consolidated public tools, or a standalone tool like `kb_search`). `src/tools/registry.ts` is a thin barrel re-exporting both, so no changes are needed there.
 
 2. **Routing** -- For a new `operation` on an existing consolidated tool, add it to the relevant schema plus a `FACADE` map entry in `src/tools/handlers/facade.ts`. Add the schema to the `SCHEMA_BY_TOOL` lookup in `src/tools/handlers.ts` so params get validated before dispatch. Local (Node.js-side) tools are implemented in `src/tools/handlers/local-tools.ts`; renderer tools are forwarded via `ipcBridge(toolName, params)`.
 
 3. **Renderer implementation** -- For renderer tools, implement the bpmn-js API call in the relevant file under `client/elements/` (`create.ts`, `mutate.ts`, `query.ts`, `forms.ts`), `client/diagram-io.ts`, or `client/batch.ts`, using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`. Then register it in the `TOOL_HANDLERS` lookup (and `SYNC_TOOL_NAMES` if it should be callable inside a compound command) in `client/bpmn-tools.ts`.
+
+### Adding a knowledge base guide
+
+Curated guides (like `BPMN-BEST-PRACTICES.md`) are served over MCP's native Resources protocol (`resources/list` / `resources/read`) via `src/resources/registry.ts` -- any MCP client can fetch them directly, not just an editor session instructed to read a specific file.
+
+1. Write the guide as a Markdown file (put it wherever makes sense -- `BPMN-BEST-PRACTICES.md` lives at the repo root since it's referenced elsewhere too).
+2. Add a `ResourceDescriptor` entry to the `RESOURCES` array in `src/resources/registry.ts`: a unique `uri` (`camunda-mcp://guides/{slug}`), a `name`, a one-line `description`, `mimeType: 'text/markdown'`, and the absolute `filePath`.
+3. If the file isn't already covered by `package.json`'s `files` array, add it there too -- otherwise it won't ship in an installed copy of the plugin.
+4. Rebuild and restart the Modeler, then verify with `resources/list` (should include the new URI) and `resources/read` (should return the file's current content).
+
+No other code changes needed -- the registry loop in `src/server.ts` picks up every entry automatically.
+
+### Adding to the knowledge base
+
+For a larger, bulk-contributed corpus (as opposed to a small set of hand-curated guides -- see [Adding a knowledge base guide](#adding-a-knowledge-base-guide) above), the entire workflow is:
+
+1. **Drop a file into `docs/knowledge-base/`.** Supported formats: `.md` (used as-is), `.pdf` (text-layer extraction), `.bpmn`/`.xml` (element names, labels, and `<documentation>` text), `.png`/`.jpg` (OCR'd text labels from a diagram photo or screenshot).
+2. That's it. No command to run, no manual reindex, no restart. A file watcher (`src/knowledge-base/watcher.ts`) picks up any add, edit, or removal under `docs/knowledge-base/` while the Modeler is running and reindexes automatically within a couple of seconds. (There's also a startup reindex for content that changed while the plugin wasn't running -- e.g. pulled via git before Modeler was launched.)
+3. Query it via the `kb_search` tool -- results come back as cited, highlighted excerpts (source file, format, and a snippet), not full documents.
+
+Under the hood this is a SQLite FTS5 full-text index with BM25 ranking (keyword search, not semantic/embedding similarity) -- see [`docs/kb-architecture/architecture.md`](docs/kb-architecture/architecture.md) for the full design rationale, including why FTS5 was chosen over a vector store.
 
 ## Project Structure
 
@@ -395,11 +419,19 @@ camunda-mcp/
 │   ├── server.ts                   # MCP HTTP server (Express + SDK)
 │   ├── renderer-bridge.ts          # Electron executeJavaScript() bridge to the renderer
 │   ├── menu.ts                     # Menu status tracking (updateMenuStatus, getMenuLabel)
+│   ├── resources/
+│   │   └── registry.ts             # Knowledge base Tier A: curated guides served over resources/list, resources/read
+│   ├── knowledge-base/
+│   │   ├── db.ts                   # better-sqlite3 connection + FTS5 schema (documents, documents_fts)
+│   │   ├── ingest.ts                # Picks the right extractor by file extension, writes one row per document
+│   │   ├── reindex.ts               # Manifest-diff (mtime) reindex -- shared by both triggers below
+│   │   ├── watcher.ts               # Live reindex trigger: chokidar watches docs/knowledge-base/ while running
+│   │   └── extractors/             # markdown.ts, pdf.ts, bpmn-xml.ts, image.ts -- one per supported format
 │   └── tools/
 │       ├── registry.ts             # Thin barrel: re-exports schemas/primitives.ts + schemas/public.ts
 │       ├── schemas/
 │       │   ├── primitives.ts       # Internal per-tool Zod schemas
-│       │   └── public.ts           # The 9 consolidated public tool schemas + tools[] listing
+│       │   └── public.ts           # The 12 consolidated public tool schemas + standalone tools (kb_search, etc.) + tools[] listing
 │       ├── handlers.ts             # dispatch() + ipcBridge wiring + SCHEMA_BY_TOOL lookup
 │       └── handlers/
 │           ├── local-tools.ts      # Node.js-side tools (createModel, createForm, addFormField, createDmn, deployProcess)
@@ -427,6 +459,9 @@ camunda-mcp/
 │   ├── __tests__/                  # Vitest unit tests for the layout/composition subsystem
 │   └── dist/
 │       └── client.js               # Webpack output (generated, not checked in)
+├── assets/
+│   └── tessdata/
+│       └── eng.traineddata         # Vendored tesseract.js English OCR data -- avoids a CDN fetch on first use
 └── dist/                           # tsc output (generated, not checked in)
 ```
 

@@ -16,6 +16,7 @@ import {
   validateDiagramSchema,
 } from './registry';
 import { createModel, createForm, addFormField, createDmn, deployProcess } from './handlers/local-tools';
+import { kbSearch } from './handlers/knowledge-base';
 import { listOpenDiagrams, switchDiagram } from './handlers/tabs';
 import { resolveFacade } from './handlers/facade';
 import { compactResult } from './handlers/compact';
@@ -152,6 +153,10 @@ export async function dispatch(
 
       case 'deploy_process':
         result = await deployProcess(params);
+        break;
+
+      case 'kb_search':
+        result = await kbSearch(params);
         break;
 
       case 'list_open_diagrams':
