@@ -102,9 +102,8 @@ function assertNoSiblingOverlap(shapes: any[], containerMap: Record<string, stri
 }
 
 async function layoutFixture(fixtureName: string) {
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   // fixtureName is always a hardcoded literal from this file's own call sites (e.g. 'gateways.bpmn'), never external input.
-  const xml = readFileSync(join(FIXTURES_DIR, fixtureName), 'utf8');
+  const xml = readFileSync(join(FIXTURES_DIR, fixtureName), 'utf8'); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const moddle = new BpmnModdle();
 
   const { rootElement: inputDefs } = await moddle.fromXML(xml);

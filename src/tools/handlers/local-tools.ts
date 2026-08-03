@@ -49,7 +49,9 @@ export async function createModel(
   const diagramId = `diagram-${Date.now()}`;
   const name = parsed.name || diagramId;
   const fileName = `${name}.bpmn`;
-  const filePath = path.join(os.tmpdir(), path.basename(fileName));
+  // path.basename() strips any directory components from the client-supplied name before
+  // the join, so this can't escape tmpdir() — Semgrep's rule can't see through that sanitizer.
+  const filePath = path.join(os.tmpdir(), path.basename(fileName)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
   // Write the BPMN XML to a temp file
   try {
@@ -110,7 +112,9 @@ export async function createForm(
   const parsed = createFormSchema.parse(params);
   const formId = `Form_${parsed.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
   const fileName = `${parsed.name}.form`;
-  const filePath = path.join(os.tmpdir(), path.basename(fileName));
+  // path.basename() strips any directory components from the client-supplied name before
+  // the join, so this can't escape tmpdir() — Semgrep's rule can't see through that sanitizer.
+  const filePath = path.join(os.tmpdir(), path.basename(fileName)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
   let fieldCounter = 0;
   const components: any[] = [];
@@ -230,7 +234,9 @@ export async function createDmn(
 ): Promise<CallToolResult> {
   const parsed = createDmnSchema.parse(params);
   const fileName = `${parsed.name}.dmn`;
-  const filePath = path.join(os.tmpdir(), path.basename(fileName));
+  // path.basename() strips any directory components from the client-supplied name before
+  // the join, so this can't escape tmpdir() — Semgrep's rule can't see through that sanitizer.
+  const filePath = path.join(os.tmpdir(), path.basename(fileName)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
   // Build inputs XML
   let inputsXml = '';
