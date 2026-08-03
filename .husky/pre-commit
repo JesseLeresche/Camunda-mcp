@@ -1,0 +1,23 @@
+# Pre-commit hook: mirrors ci.yml's build-and-test job (type-check + test)
+# and security.yml's secret scan (gitleaks locally instead of Trivy — Trivy's
+# fs scanner has no "staged files only" mode, gitleaks does).
+# Skip with: git commit --no-verify
+
+set -e
+
+# 1. Gitleaks — secret detection on staged changes
+if ! command -v gitleaks &> /dev/null; then
+  echo "gitleaks not found — install it: https://github.com/gitleaks/gitleaks#installing, then retry (or skip with --no-verify)"
+  exit 1
+fi
+gitleaks protect --staged --no-banner --exit-code 1
+
+# 2. TypeScript type-check — mirrors the tsc half of ci.yml's `npm run build`
+if [ ! -d node_modules ]; then
+  echo "node_modules not found — run npm install first, or skip with --no-verify"
+  exit 1
+fi
+npx tsc --noEmit
+
+# 3. Tests — mirrors ci.yml's `npm test`
+npm test

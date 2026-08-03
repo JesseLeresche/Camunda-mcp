@@ -9,7 +9,8 @@
     "test": "vitest run",
     "prepublishOnly": "npm run build && npm test",
     "layout:test": "npx tsx dev/layout-tests.ts",
-    "layout:test:dry": "npx tsx dev/layout-tests.ts --dry-run"
+    "layout:test:dry": "npx tsx dev/layout-tests.ts --dry-run",
+    "prepare": "husky"
   },
   "keywords": [
     "camunda",
@@ -58,6 +59,7 @@
     "@types/uuid": "^10.0.0",
     "camunda-modeler-plugin-helpers": "^6.0.0",
     "camunda-modeler-webpack-plugin": "^0.2.0",
+    "husky": "^9.1.7",
     "ts-loader": "^9.5.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.1",
