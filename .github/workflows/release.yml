@@ -10,8 +10,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'npm'
@@ -19,6 +19,8 @@ jobs:
       - run: npm run build
       - run: npm test
       - name: Package release
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           mkdir -p release/camunda-mcp
           cp index.js menu.js package.json README.md LICENSE release/camunda-mcp/
@@ -27,10 +29,10 @@ jobs:
           cp client/dist/client.js release/camunda-mcp/client/dist/
           cp -r docs release/camunda-mcp/ 2>/dev/null || true
           cd release/camunda-mcp && npm install --omit=dev --ignore-scripts
-          cd .. && zip -qr camunda-mcp-${{ github.ref_name }}.zip camunda-mcp/
-          tar -czf camunda-mcp-${{ github.ref_name }}.tar.gz camunda-mcp/
+          cd .. && zip -qr "camunda-mcp-${REF_NAME}.zip" camunda-mcp/
+          tar -czf "camunda-mcp-${REF_NAME}.tar.gz" camunda-mcp/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             release/camunda-mcp-${{ github.ref_name }}.zip

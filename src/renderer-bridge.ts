@@ -72,7 +72,7 @@ async function dispatchToRenderer(
     timeoutPromise,
   ]);
 
-  console.log(`${LOG_PREFIX} Renderer result for ${tool}:`, JSON.stringify(result));
+  console.log('%s Renderer result for %s:', LOG_PREFIX, tool, JSON.stringify(result));
 
   // Guard: wrap raw result if not proper CallToolResult format
   if (result && result.content && Array.isArray(result.content)) {
