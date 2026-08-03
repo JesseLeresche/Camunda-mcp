@@ -141,7 +141,7 @@ function McpCommandHandler(
   const entry: DispatchRegistryEntry = {
     container: canvas.getContainer(),
     dispatch: async (tool: string, params: Record<string, unknown>) => {
-      console.log(`[camunda-mcp] Dispatch: ${tool}`, params);
+      console.log('[camunda-mcp] Dispatch: %s', tool, params);
       try {
         const rawResult = await dispatchRendererTool(tool, params, services);
         return {
@@ -149,7 +149,7 @@ function McpCommandHandler(
         };
       } catch (err: any) {
         const message = err.message || String(err);
-        console.error(`[camunda-mcp] Command ${tool} failed:`, message);
+        console.error('[camunda-mcp] Command %s failed:', tool, message);
         return {
           content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
           isError: true,

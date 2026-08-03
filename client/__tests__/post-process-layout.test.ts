@@ -18,6 +18,8 @@ import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelTex
 const FIXTURES_DIR = join(__dirname, '..', '..', 'test', 'fixtures');
 
 async function loadLaidOutPlane(fixtureName: string) {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  // fixtureName is always a hardcoded literal from this file's own call sites (e.g. 'complex-loan-underwriting.bpmn'), never external input.
   const xml = readFileSync(join(FIXTURES_DIR, fixtureName), 'utf8');
   const laidOutXml = await layoutProcess(xml);
   const moddle = new BpmnModdle();

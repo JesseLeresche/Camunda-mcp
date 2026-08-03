@@ -49,14 +49,14 @@ export async function createModel(
   const diagramId = `diagram-${Date.now()}`;
   const name = parsed.name || diagramId;
   const fileName = `${name}.bpmn`;
-  const filePath = path.join(os.tmpdir(), fileName);
+  const filePath = path.join(os.tmpdir(), path.basename(fileName));
 
   // Write the BPMN XML to a temp file
   try {
     fs.writeFileSync(filePath, EMPTY_BPMN_XML, 'utf-8');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`${LOG_PREFIX} Failed to write BPMN file to ${filePath}:`, message);
+    console.error('%s Failed to write BPMN file to %s:', LOG_PREFIX, filePath, message);
     return {
       content: [{ type: 'text', text: JSON.stringify({ error: `Failed to write diagram file: ${message}` }) }],
       isError: true,
@@ -110,7 +110,7 @@ export async function createForm(
   const parsed = createFormSchema.parse(params);
   const formId = `Form_${parsed.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
   const fileName = `${parsed.name}.form`;
-  const filePath = path.join(os.tmpdir(), fileName);
+  const filePath = path.join(os.tmpdir(), path.basename(fileName));
 
   let fieldCounter = 0;
   const components: any[] = [];
@@ -230,7 +230,7 @@ export async function createDmn(
 ): Promise<CallToolResult> {
   const parsed = createDmnSchema.parse(params);
   const fileName = `${parsed.name}.dmn`;
-  const filePath = path.join(os.tmpdir(), fileName);
+  const filePath = path.join(os.tmpdir(), path.basename(fileName));
 
   // Build inputs XML
   let inputsXml = '';
@@ -280,7 +280,7 @@ ${outputsXml}
     fs.writeFileSync(filePath, dmnXml, 'utf-8');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`${LOG_PREFIX} Failed to write DMN file to ${filePath}:`, message);
+    console.error('%s Failed to write DMN file to %s:', LOG_PREFIX, filePath, message);
     return {
       content: [{ type: 'text', text: JSON.stringify({ error: `Failed to write DMN file: ${message}` }) }],
       isError: true,

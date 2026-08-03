@@ -82,7 +82,7 @@ export async function startMcpServer(): Promise<void> {
     })
     .catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Knowledge base reindex failed:`, message);
+      console.error('%s Knowledge base reindex failed:', LOG_PREFIX, message);
     });
 
   // --- Knowledge base: live reindex while the plugin is running ---
@@ -135,12 +135,12 @@ export async function startMcpServer(): Promise<void> {
           description: toolDef.description,
           inputSchema: zodObject.shape,
         }, async (args: Record<string, unknown>) => {
-          console.log(`${LOG_PREFIX} Tool call: ${toolName}`, args);
+          console.log('%s Tool call: %s', LOG_PREFIX, toolName, args);
           try {
             return await dispatch(toolName, args);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            console.error(`${LOG_PREFIX} Tool error (${toolName}):`, message);
+            console.error('%s Tool error (%s):', LOG_PREFIX, toolName, message);
             return {
               content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
               isError: true,
@@ -168,7 +168,7 @@ export async function startMcpServer(): Promise<void> {
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Request error:`, message);
+      console.error('%s Request error:', LOG_PREFIX, message);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
@@ -197,7 +197,7 @@ export async function startMcpServer(): Promise<void> {
       if (errno === 'EADDRINUSE' && attempt < maxRetries - 1) {
         console.warn(`${LOG_PREFIX} Port ${tryPort} in use, trying ${tryPort + 1}...`);
       } else {
-        console.error(`${LOG_PREFIX} Failed to bind to port ${tryPort}:`, err);
+        console.error('%s Failed to bind to port %s:', LOG_PREFIX, tryPort, err);
         throw err;
       }
     }
@@ -230,7 +230,7 @@ function registerShutdownHook(): void {
 
     stopKnowledgeBaseWatcher().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Failed to stop knowledge base watcher:`, message);
+      console.error('%s Failed to stop knowledge base watcher:', LOG_PREFIX, message);
     });
 
     if (httpServer) {

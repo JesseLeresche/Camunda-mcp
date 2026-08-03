@@ -40,7 +40,7 @@ function scheduleReindex(): void {
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`${LOG_PREFIX} Live reindex failed:`, message);
+        console.error('%s Live reindex failed:', LOG_PREFIX, message);
       });
   }, DEBOUNCE_MS);
 }
@@ -67,7 +67,7 @@ export function startKnowledgeBaseWatcher(): void {
     .on('unlink', scheduleReindex)
     .on('error', (err) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Knowledge base watcher error:`, message);
+      console.error('%s Knowledge base watcher error:', LOG_PREFIX, message);
     });
 
   console.log(`${LOG_PREFIX} Watching ${KB_SOURCE_DIR} for changes`);
