@@ -153,6 +153,41 @@ doesn't land exactly on another element or label.
 
 ## Known Tool Gotchas
 
+### `build_process` manual (non-autoLayout) placement can silently misposition gateway→task connections
+
+**Confirmed bug, root cause not fully pinned — use `autoLayout: true` (now the default) instead of chasing this.**
+
+When `build_process` is called with `autoLayout: false` (hand-authored x/y for every element), a gateway
+connected to an immediately-following task can land with an incorrect, non-center-aligned position —
+confirmed via `query_diagram {operation: "bounds"}` and the raw saved XML (not a rendering artifact,
+not a stale/uncommitted diagram, not a race condition — re-querying the same element minutes later
+returns the identical wrong position). The result is a flow that bends unnecessarily (up-then-right)
+instead of a straight horizontal line, and a flow label that ends up overlapping the target task's
+corner. Two otherwise-identical gateway→task test cases (same element types, same single connecting
+flow) produced different results — one landed exactly right, one landed nowhere near the requested
+coordinates — so this isn't a simple, deterministic coordinate-math offset; the exact trigger wasn't
+isolated before switching to the workaround below. `layout {operation: "validate"}` does **not**
+reliably catch the resulting label-overlap (it catches a label directly over a shape's body, but not
+consistently when the label sits at a bend point near a shape's corner) — don't treat a clean
+`validate` result as proof the diagram is visually correct after manual placement.
+
+**Fix: use `build_process {autoLayout: true}` (now the schema default) instead of hand-placed
+coordinates whenever possible.** This runs the `bpmn-auto-layout` library (already a tested
+dependency — it's what the `client/__tests__/layout-fixtures.test.ts`/`post-process-layout.test.ts`
+regression suite validates against), which reliably center-aligns connected elements and produces
+straight lines with no manual coordinate math at all. **This is a different mechanism from the
+"`layout {operation: "auto"}` can invert the happy path" gotcha below** — that one is this project's
+own custom branch-aware layout engine (`client/layout/auto-layout.ts`), a separate code path with a
+separate, narrower known issue (which branch reads as the happy path on re-layout of an
+already-hand-laid-out diagram). Don't let a warning about one apply to the other — `build_process
+{autoLayout: true}` computes a fresh layout for elements you're creating in that same call and has
+not exhibited the happy-path-inversion problem.
+
+If you must hand-place coordinates anyway (e.g. matching an existing diagram's established layout
+exactly), treat every gateway→task connection as suspect: after `build_process`, call
+`query_diagram {operation: "bounds"}` on both ends of each such connection and verify their centers
+actually landed where intended before trusting the result.
+
 ### Deleting an element can leave a stale "bypass" flow
 
 If an element sits in the middle of a chain (`A -> B -> C`) and you delete `B` (e.g. to fix a

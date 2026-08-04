@@ -472,7 +472,7 @@ export const buildProcessSchema = z.object({
     isDefault: z.boolean().optional().describe('Mark as the default flow of its source element. Satisfies validation without a conditionExpression; only one outgoing flow per source can be default.'),
     waypoints: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
   })).optional().describe('Sequence flows to create between elements'),
-  autoLayout: z.boolean().default(false).describe('Apply Modeler auto-layout after building'),
+  autoLayout: z.boolean().default(true).describe('Apply bpmn-auto-layout after building (default true — recommended: manual x/y placement in this tool has a known unreliable-positioning issue for gateway-to-task connections; see BPMN-BEST-PRACTICES.md). Set false only when placement must exactly match hand-authored coordinates.'),
 });
 
 export const validateLayoutSchema = z.object({

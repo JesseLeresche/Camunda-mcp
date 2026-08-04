@@ -215,7 +215,7 @@ export const tools: ToolDefinition[] = [
   {
     name: 'build_process',
     description:
-      'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. Set autoLayout=true to auto-position. Preferred over many add_element calls.',
+      'Declarative process builder — creates all elements and flows in one call. Accepts user-friendly type names (serviceTask, exclusiveGateway, etc). Returns idMap mapping logical IDs to actual bpmn-js IDs. autoLayout defaults to true (bpmn-auto-layout positions everything) — set autoLayout=false only to place elements at exact hand-authored x/y coordinates, which has a known unreliable-positioning issue for gateway-to-task connections. Preferred over many add_element calls.',
     inputSchema: buildProcessSchema,
     executeLocal: false,
   },
