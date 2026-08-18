@@ -60,7 +60,7 @@
     "camunda-modeler-plugin-helpers": "^6.0.0",
     "camunda-modeler-webpack-plugin": "^0.2.0",
     "husky": "^9.1.7",
-    "ts-loader": "^9.5.0",
+    "ts-loader": "^9.6.2",
     "typescript": "^5.7.0",
     "vitest": "^4.1.1",
     "webpack": "^5.109.2",
