@@ -2,9 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
-    branches: [main]
+    branches: [main, staging]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch: {}
+
+# A push to a branch with an open PR fires both `push` and `pull_request:synchronize`
+# for the same commit, which would otherwise run this workflow twice. Group by the
+# commit SHA so the second run cancels the first. `github.sha` on a `pull_request`
+# event is a synthetic merge commit, not the branch's head commit, so we prefer
+# `github.event.pull_request.head.sha` (falling back to `github.sha` for push /
+# workflow_dispatch) to line both events up on the same key.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
@@ -13,9 +28,9 @@ jobs:
       matrix:
         node-version: [20, 22]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'

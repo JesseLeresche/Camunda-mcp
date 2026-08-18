@@ -28,6 +28,12 @@ To center-align a task with an event at target center Y:
 - **Vertical gap for parallel branches:** 120px above/below the center line
 - **Rejection/error paths:** 180px below the main flow
 - **Annotations:** 100–130px above the element they annotate
+- **Tasks with a named boundary event:** widen the gap to the *next* element to 220–240px, not
+  the standard 160–200px. A boundary event's name label renders beside/below the event itself,
+  competing for the same horizontal band as the next flow node's label — at standard spacing the
+  two labels crowd or nearly touch (observed with a task carrying a named error boundary event
+  followed 190px later by a labeled intermediate event). Either widen the gap or keep the boundary
+  event unlabeled if the icon (timer/error/etc.) is self-explanatory in context.
 
 ### Standard Layout
 
@@ -136,6 +142,79 @@ When using `auto_layout` or positioning elements around gateway branches:
 [X] Split ——————————————→ [+] Continue
        "Existing Client"
 ```
+
+If the detour has its *own* rejoin/rejection gateway (e.g. an approval check on the detour task)
+and that gateway's rejection path drops straight down to an end event below the main line, expect
+that vertical line to cross the main horizontal flow at one point. That's a normal single line
+crossing, not element overlap — don't spend effort routing around it; it reads fine as long as it
+doesn't land exactly on another element or label.
+
+---
+
+## Known Tool Gotchas
+
+### `build_process` manual (non-autoLayout) placement can silently misposition gateway→task connections
+
+**Confirmed bug, root cause not fully pinned — use `autoLayout: true` (now the default) instead of chasing this.**
+
+When `build_process` is called with `autoLayout: false` (hand-authored x/y for every element), a gateway
+connected to an immediately-following task can land with an incorrect, non-center-aligned position —
+confirmed via `query_diagram {operation: "bounds"}` and the raw saved XML (not a rendering artifact,
+not a stale/uncommitted diagram, not a race condition — re-querying the same element minutes later
+returns the identical wrong position). The result is a flow that bends unnecessarily (up-then-right)
+instead of a straight horizontal line, and a flow label that ends up overlapping the target task's
+corner. Two otherwise-identical gateway→task test cases (same element types, same single connecting
+flow) produced different results — one landed exactly right, one landed nowhere near the requested
+coordinates — so this isn't a simple, deterministic coordinate-math offset; the exact trigger wasn't
+isolated before switching to the workaround below. `layout {operation: "validate"}` does **not**
+reliably catch the resulting label-overlap (it catches a label directly over a shape's body, but not
+consistently when the label sits at a bend point near a shape's corner) — don't treat a clean
+`validate` result as proof the diagram is visually correct after manual placement.
+
+**Fix: use `build_process {autoLayout: true}` (now the schema default) instead of hand-placed
+coordinates whenever possible.** This runs the `bpmn-auto-layout` library (already a tested
+dependency — it's what the `client/__tests__/layout-fixtures.test.ts`/`post-process-layout.test.ts`
+regression suite validates against), which reliably center-aligns connected elements and produces
+straight lines with no manual coordinate math at all. **This is a different mechanism from the
+"`layout {operation: "auto"}` can invert the happy path" gotcha below** — that one is this project's
+own custom branch-aware layout engine (`client/layout/auto-layout.ts`), a separate code path with a
+separate, narrower known issue (which branch reads as the happy path on re-layout of an
+already-hand-laid-out diagram). Don't let a warning about one apply to the other — `build_process
+{autoLayout: true}` computes a fresh layout for elements you're creating in that same call and has
+not exhibited the happy-path-inversion problem.
+
+If you must hand-place coordinates anyway (e.g. matching an existing diagram's established layout
+exactly), treat every gateway→task connection as suspect: after `build_process`, call
+`query_diagram {operation: "bounds"}` on both ends of each such connection and verify their centers
+actually landed where intended before trusting the result.
+
+### Deleting an element can leave a stale "bypass" flow
+
+If an element sits in the middle of a chain (`A -> B -> C`) and you delete `B` (e.g. to fix a
+misconfigured event created with the wrong `eventDefinitionType`), the delete can leave behind a
+stale sequence flow connecting `A` directly to `C`, bypassing where `B` used to be. This is easy to
+miss because the diagram still "looks" connected — the bypass flow renders as a long straight or
+crossing line that overlaps other elements.
+
+After any `delete` of a mid-chain element, run `query_diagram {operation: "list"}` and check the
+`incoming`/`outgoing` arrays of the old neighbors for an unexpected flow directly between them, and
+delete it if found. Prefer building the correct element right the first time (e.g. set
+`eventDefinitionType` at the top level of the `build_process`/`add_element` call, not nested under
+`properties`) to avoid the delete-and-recreate path entirely.
+
+### `layout {operation: "auto"}` can invert which branch reads as the happy path
+
+The branch-aware auto-layout is convenient but not guaranteed to preserve which exclusive-gateway
+branch is the "straight line" one. On a diagram with hand-placed coordinates, calling `layout auto`
+has been observed to flatten the true happy-path branch into a below-the-line loop and promote the
+exception branch to the center line instead — the opposite of "Happy Path First" below — while also
+introducing new crossing lines.
+
+Prefer manual coordinate placement (per this doc) plus `layout {operation: "validate", autoFix:
+true}` for targeted fixes (it only nudges waypoints to resolve specific flagged issues like a flow
+crossing an element, it does not reposition/re-fan whole branches). Only reach for `layout auto` on
+a diagram that has no hand-authored layout yet, and re-verify the happy path is still the straight
+line afterward.
 
 ---
 

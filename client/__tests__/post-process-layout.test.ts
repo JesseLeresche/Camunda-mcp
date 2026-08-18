@@ -4,7 +4,7 @@ import { join } from 'path';
 import { layoutProcess } from 'bpmn-auto-layout';
 // @ts-ignore — bpmn-moddle ships no types; same pattern as the smoke test.
 import { BpmnModdle } from 'bpmn-moddle';
-import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelText, postProcessLayout } from '../bpmn-tools';
+import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelText, postProcessLayout } from '../layout/post-process';
 
 /**
  * Phase 2 regression suite — the post-processing pass that runs on
@@ -18,7 +18,8 @@ import { dedupEdgeWaypoints, findConflictGroups, routeAwayOverlaps, wrapLabelTex
 const FIXTURES_DIR = join(__dirname, '..', '..', 'test', 'fixtures');
 
 async function loadLaidOutPlane(fixtureName: string) {
-  const xml = readFileSync(join(FIXTURES_DIR, fixtureName), 'utf8');
+  // fixtureName is always a hardcoded literal from this file's own call sites (e.g. 'complex-loan-underwriting.bpmn'), never external input.
+  const xml = readFileSync(join(FIXTURES_DIR, fixtureName), 'utf8'); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const laidOutXml = await layoutProcess(xml);
   const moddle = new BpmnModdle();
   const { rootElement: defs } = await moddle.fromXML(laidOutXml);

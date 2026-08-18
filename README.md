@@ -10,6 +10,8 @@ This plugin adds an [MCP (Model Context Protocol)](https://modelcontextprotocol.
 
 The plugin ships with **12 resource-oriented tools** covering the full BPMN modeling lifecycle: placing elements (tasks, events, gateways, sub-processes), connecting them with sequence flows, configuring properties and implementation details (Camunda 7 and 8), managing I/O mappings and task headers, introspecting diagrams, and importing/exporting BPMN 2.0 XML. It also supports creating and linking Camunda Forms. Most tools select behaviour via an `operation` enum (e.g. `add_element {operation: "task"}`).
 
+It also ships a **knowledge base**: a small set of curated guides available over MCP's native Resources protocol, plus a searchable, team-contributed corpus (Markdown, PDF, BPMN/XML, and OCR'd diagram images) via the `kb_search` tool — see [Adding a knowledge base guide](#adding-a-knowledge-base-guide) and [Adding to the knowledge base](#adding-to-the-knowledge-base).
+
 **Token-efficient features:** The `build_process` tool creates an entire process (elements + flows + auto-layout) in a single call. The `update_element {operation: "properties"}` action updates any combination of properties in one call. The `compact: true` flag on any tool strips responses to essential IDs only. The `query_diagram {operation: "list"}` action supports field selection and subprocess filtering.
 
 **Undo/Redo support:** All tool operations integrate with the Modeler's command stack. Compound operations (`build_process`, `layout {operation: "auto"}`, `batch_operations`) are grouped into a single undo step — press Ctrl+Z once to undo an entire process build or layout change.
@@ -32,22 +34,15 @@ v2.0 follows the recommended pattern: a small set of **resource-oriented tools**
 
 ## Architecture
 
-![Architecture — Request flow through the two Electron processes](docs/architecture.png)
+![Camunda-MCP Plugin Structure View](docs/kb-architecture/kb-structure-view.png)
 
-*Architecture model created with [Archi](https://www.archimatetool.com/) via the [Archi MCP Plugin](https://github.com/tobi/archi-mcp-server).*
+The plugin runs across two Electron processes connected by a renderer bridge (Node.js main process + Chromium renderer), plus the knowledge base subsystem shown above. For the full request lifecycle, a breakdown of every module in `src/` and `client/`, and why the bridge uses `executeJavaScript()` instead of IPC, see **[`docs/architecture.md`](docs/architecture.md)** (whole-plugin) and **[`docs/kb-architecture/architecture.md`](docs/kb-architecture/architecture.md)** (knowledge base deep dive, diagrams, and the editable Archi model).
 
-The plugin runs across two Electron processes connected by a renderer bridge.
+## Knowledge Base in Action
 
-**Request lifecycle:**
+![Knowledge Base Real-World Interaction Lifecycle](docs/kb-architecture/kb-lifecycle-view.png)
 
-1. MCP client sends `POST /mcp` with a JSON-RPC tool call
-2. The MCP SDK routes the call to the registered tool handler, which resolves the consolidated tool + `operation` to an internal handler
-3. **Local handlers** (e.g. `manage_diagram {operation: "create"}`, `create_dmn`) execute directly in Node.js
-4. **Renderer handlers** (e.g. `add_element`, `connect`) are forwarded to the Chromium renderer via `webContents.executeJavaScript()`, which calls `window.__mcpDispatch()` -- a global function registered by the bpmn-js plugin module
-5. The renderer calls the bpmn-js API (`modeling.createShape`, `modeling.connect`, `modeling.updateLabel`, etc.) and returns the result
-6. The MCP server returns the JSON-RPC response to the client
-
-**Why `executeJavaScript` instead of IPC?** The Camunda Modeler runs with `contextIsolation` enabled, which prevents plugin scripts from accessing `ipcRenderer`. The `executeJavaScript` bridge bypasses this by calling a global function directly from the main process.
+A concrete walk-through of the two-tier knowledge base and BPMN tools working together: a team member asks the AI agent to build or modify a diagram (e.g. *"Add a payment retry gateway"*). The agent (1) calls `kb_search` before acting, (2) gets relevant guidance back as cited excerpts, (3) calls a BPMN tool informed by that guidance, (4) gets the tool's result, and (5) reports the updated diagram back to the team member. This is the payoff of the design in [Architecture](#architecture) above — the knowledge base isn't a side feature, it's meant to be consulted as a normal part of every non-trivial diagram operation. See [`docs/kb-architecture/architecture.md`](docs/kb-architecture/architecture.md#real-world-example) for the full breakdown.
 
 ## Available Tools
 
@@ -67,6 +62,7 @@ and status fields only, reducing token usage by ~80%.
 | `export_image` | `diagramId`, `filePath`, `format` (`png`/`svg`, default `png`), `scale` (default `2`) | Exports the diagram as a PNG or SVG image. |
 | `import_xml` | `diagramId`, `xml` | Imports/replaces the diagram from BPMN 2.0 XML. |
 | `get_xml` | `diagramId` | Exports the diagram as BPMN 2.0 XML. |
+| `set_execution_platform_version` | `diagramId`, `version` (e.g. `"8.10"`), `platform` (default `"Camunda Cloud"`) | Corrects the target Camunda 8 execution platform version on the open diagram — needed for diagrams not created via `manage_diagram {operation: "create"}` (e.g. authored directly in Modeler), which carry no version stamp otherwise. |
 
 ### `add_element` — add a single element
 
@@ -74,11 +70,11 @@ Common params: `diagramId`, `name`, `x`, `y`, `parentId` (nest inside an expande
 
 | `operation` | Extra parameters | Description |
 |------|-----------|-------------|
-| `start` | — | Start Event. |
-| `end` | `eventDefinitionType` (Error, Signal, Message, Terminate, …) | End Event. A non-`none` definition creates a typed end event. |
-| `task` | `type` (`bpmn:UserTask`, `bpmn:ServiceTask`, `bpmn:ScriptTask`, …) | Task. |
+| `start` | `eventDefinitionType` (Message/Signal/Timer only), `messageRef`/`signalRef`/`timerValue`/`timerType` | Start Event. A process may only have one blank start event — use a typed one for a second, distinct trigger. |
+| `end` | `eventDefinitionType` (Error, Signal, Message, Terminate, Escalation, …), `errorRef`/`errorCode`, `messageRef`, `signalRef`, `escalationRef`/`escalationCode` | End Event. A non-`none` definition creates a typed end event; the matching `*Ref` field is required by Camunda validation for that definition type. |
+| `task` | `type` (`bpmn:UserTask`, `bpmn:ServiceTask`, `bpmn:ScriptTask`, …), `taskType` (Zeebe job type, required for ServiceTask/SendTask/BusinessRuleTask/ScriptTask), `taskRetries`, `messageRef` (ReceiveTask required/SendTask optional), `correlationKey` (ReceiveTask required alongside `messageRef`) | Task. |
 | `gateway` | `type` (`bpmn:ExclusiveGateway`, `bpmn:ParallelGateway`, …) | Gateway. |
-| `event` | `type` (intermediate/boundary), `eventDefinitionType`, `attachedToId`, `cancelActivity`, `boundaryPosition`, `timerValue`, `timerType` | Intermediate or boundary event. |
+| `event` | `type` (intermediate/boundary), `eventDefinitionType`, `attachedToId`, `cancelActivity`, `boundaryPosition`, `timerValue`/`timerType`, `errorRef`/`errorCode`, `messageRef`/`correlationKey`, `signalRef`, `escalationRef`/`escalationCode` | Intermediate or boundary event; extra fields apply per `eventDefinitionType`. |
 | `subprocess` | `type` (`bpmn:SubProcess`/`bpmn:CallActivity`), `width`, `height`, `collapsed`, `calledElement` | SubProcess or CallActivity. |
 | `pool` | `width`, `height` | Pool (`bpmn:Participant`) for collaboration diagrams. |
 | `lane` | `participantId` | Lane inside a pool. |
@@ -112,6 +108,7 @@ Common params: `diagramId`, `elementId`.
 | `list` | `diagramId`, `typeFilter` (optional), `parentId` (optional), `fields` (optional) | Lists elements with optional type filter, subprocess scope, and field selection. |
 | `get` | `diagramId`, `elementId` | Full detail incl. properties, extensions, connections. |
 | `bounds` | `diagramId`, `elementId` | Exact rendered bounds, center, edge connection points, and waypoints. |
+| `validate` | `diagramId`, `severity` (`error`/`warn`/`all`, default `"all"`) | Live Camunda validation errors/warnings — the same data as Modeler's Problems panel. Call this after `build_process`/`batch_operations` to confirm the diagram is actually valid instead of assuming so. |
 
 ### `manage_element` — delete / clone
 
@@ -143,6 +140,7 @@ Common params: `diagramId`, `elementId`.
 | `batch_operations` | `diagramId`, `operations` (array of `{tool, params}`) | Executes multiple **internal primitive** operations in one undoable call. `tool` uses internal primitive names (e.g. `move_element`, `connect_elements`), not the consolidated public tool names. Use `"$ref:N"` to reference the result of operation N. |
 | `create_dmn` | `name`, `tableName`, `hitPolicy` (UNIQUE/FIRST/…), `inputs`, `outputs` | Creates a DMN decision table file. |
 | `deploy_process` | `filePath`, `clusterUrl`, `clientId`, `clientSecret` | Deploys a BPMN process to Camunda 8 Zeebe. Requires `ZEEBE_ADDRESS`, `ZEEBE_CLIENT_ID`, `ZEEBE_CLIENT_SECRET` env vars. |
+| `kb_search` | `query`, `limit` (default 5, max 20) | Keyword search (BM25-ranked) over the knowledge base corpus in `docs/knowledge-base/` — Markdown, PDF, BPMN/XML, and OCR'd images. Returns cited, highlighted excerpts per result, not full documents. See [Adding to the knowledge base](#adding-to-the-knowledge-base). |
 
 ### Authentication
 
@@ -152,6 +150,7 @@ Set the `MCP_API_KEY` environment variable to enable Bearer token authentication
 
 - **Camunda Desktop Modeler** v5.x (Electron-based)
 - **Node.js** >= 20 and **npm** >= 9 *(only required if building from source)*
+- **A C++ build toolchain** *(only if building from source, and only as a fallback — `better-sqlite3` ships prebuilt binaries for most common platforms via `prebuild-install`; a toolchain is only needed if no matching prebuilt exists for your Node.js version/OS/architecture)*
 
 ## Installation
 
@@ -215,7 +214,15 @@ Pick one of the two installation paths below.
    - `tsc` compiles the Node.js-side TypeScript (`src/`) to `dist/`
    - `webpack` bundles the renderer-side TypeScript (`client/`) to `client/dist/client.js`
 
-3. **Symlink into the Camunda Modeler plugins directory:**
+3. **Rebuild `better-sqlite3` against Modeler's Electron version** (only needed for the knowledge base's `kb_search` tool -- every other tool works fine without this step). This plugin loads directly into Camunda Modeler's own already-built Electron process via a symlink, not through a build pipeline that would normally rebuild native modules for the host's exact ABI -- a binary built against your local Node.js version will very likely fail to load with an ABI mismatch inside the real Modeler:
+
+   ```bash
+   npx electron-rebuild --version <modeler-electron-version> --module-dir . --which-module better-sqlite3 --force
+   ```
+
+   Find `<modeler-electron-version>` from the Modeler installation itself (e.g. its Help/About screen). If you skip this, the plugin still loads and every BPMN/Forms tool works normally -- a failed knowledge base reindex is caught and logged, not fatal (see [Known Limitations](#known-limitations) and [`docs/kb-architecture/architecture.md`](docs/kb-architecture/architecture.md#open-risk-the-one-native-dependency)).
+
+4. **Symlink into the Camunda Modeler plugins directory:**
 
    ```bash
    # macOS
@@ -228,7 +235,7 @@ Pick one of the two installation paths below.
    mklink /d "%APPDATA%\camunda-modeler\resources\plugins\camunda-mcp" C:\path\to\Camunda-mcp
    ```
 
-4. **Restart the Camunda Desktop Modeler.** The plugin will load automatically. Check the **Plugins** menu for "MCP Server: Running (port 3100)".
+5. **Restart the Camunda Desktop Modeler.** The plugin will load automatically. Check the **Plugins** menu for "MCP Server: Running (port 3100)".
 
 ## Upgrading from v1.x
 
@@ -268,6 +275,8 @@ npm run build
 # the existing symlink already points here — just restart the Modeler
 ```
 
+`npm install` will pull in the new v2.0 knowledge base dependencies; if you want `kb_search` working locally, also re-run the `electron-rebuild` step from [Option B](#option-b--build-from-source) above (`npm install` alone rebuilds `better-sqlite3` against your local Node.js, not Modeler's Electron).
+
 ### 3. Update your prompts and automation
 
 Any saved prompts, scripts, or `autoApprove` lists that reference v1 tool names must be updated to the consolidated tools. Most v1 tools become an `operation` on a v2 tool.
@@ -304,6 +313,7 @@ Any saved prompts, scripts, or `autoApprove` lists that reference v1 tool names 
 | `list_elements` | `query_diagram {operation: "list"}` |
 | `get_element` | `query_diagram {operation: "get"}` |
 | `get_element_bounds` | `query_diagram {operation: "bounds"}` |
+| `validate_diagram` | `query_diagram {operation: "validate"}` |
 | `delete_element` | `manage_element {operation: "delete"}` |
 | `clone_element` | `manage_element {operation: "clone"}` |
 | `auto_layout` | `layout {operation: "auto"}` |
@@ -368,17 +378,38 @@ Run both the TypeScript compiler and webpack in watch mode for iterative develop
 npm run dev
 ```
 
-After making changes, hot-reload inside the Modeler with **F12** (open DevTools) then **Cmd+R**. A full Modeler restart is only needed when server-side tool registrations change.
+**`client/` changes** (the Chromium renderer) hot-reload inside the Modeler with **F12** (open DevTools) then **Cmd+R**. **`src/` changes** (the Node.js main process — the MCP server, tool registration, the knowledge base, everything server-side) run in a separate OS process the renderer reload can't touch, so they always need a **full Modeler restart** to take effect, not just F12/Cmd+R.
 
 ### Adding new tools
 
-Every tool follows the same pattern across three files:
+Tool implementations are split across a few layers:
 
-1. **`src/tools/registry.ts`** -- Define a Zod input schema and add a `ToolDefinition` entry to the `tools` array. Set `executeLocal: true` for Node.js-side tools or `executeLocal: false` for tools that need bpmn-js API access.
+1. **Schema** -- Define a Zod input schema in `src/tools/schemas/primitives.ts` (internal per-tool schemas) or `src/tools/schemas/public.ts` (one of the 12 consolidated public tools, or a standalone tool like `kb_search`). `src/tools/registry.ts` is a thin barrel re-exporting both, so no changes are needed there.
 
-2. **`src/tools/handlers.ts`** -- Add a `case` to the `dispatch()` switch. Local tools implement their logic here directly. Renderer tools forward via `ipcBridge(toolName, params)`.
+2. **Routing** -- For a new `operation` on an existing consolidated tool, add it to the relevant schema plus a `FACADE` map entry in `src/tools/handlers/facade.ts`. Add the schema to the `SCHEMA_BY_TOOL` lookup in `src/tools/handlers.ts` so params get validated before dispatch. Local (Node.js-side) tools are implemented in `src/tools/handlers/local-tools.ts`; renderer tools are forwarded via `ipcBridge(toolName, params)`.
 
-3. **`client/bpmn-tools.ts`** -- For renderer tools, add a `case` to `dispatchRendererTool()` and implement the bpmn-js API call using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`.
+3. **Renderer implementation** -- For renderer tools, implement the bpmn-js API call in the relevant file under `client/elements/` (`create.ts`, `mutate.ts`, `query.ts`, `forms.ts`), `client/diagram-io.ts`, or `client/batch.ts`, using the injected services: `modeling`, `elementRegistry`, `canvas`, `moddle`, `bpmnFactory`, `injector`. Then register it in the `TOOL_HANDLERS` lookup (and `SYNC_TOOL_NAMES` if it should be callable inside a compound command) in `client/bpmn-tools.ts`.
+
+### Adding a knowledge base guide
+
+Curated guides (like `BPMN-BEST-PRACTICES.md`) are served over MCP's native Resources protocol (`resources/list` / `resources/read`) via `src/resources/registry.ts` -- any MCP client can fetch them directly, not just an editor session instructed to read a specific file.
+
+1. Write the guide as a Markdown file (put it wherever makes sense -- `BPMN-BEST-PRACTICES.md` lives at the repo root since it's referenced elsewhere too).
+2. Add a `ResourceDescriptor` entry to the `RESOURCES` array in `src/resources/registry.ts`: a unique `uri` (`camunda-mcp://guides/{slug}`), a `name`, a one-line `description`, `mimeType: 'text/markdown'`, and the absolute `filePath`.
+3. If the file isn't already covered by `package.json`'s `files` array, add it there too -- otherwise it won't ship in an installed copy of the plugin.
+4. Rebuild and restart the Modeler, then verify with `resources/list` (should include the new URI) and `resources/read` (should return the file's current content).
+
+No other code changes needed -- the registry loop in `src/server.ts` picks up every entry automatically.
+
+### Adding to the knowledge base
+
+For a larger, bulk-contributed corpus (as opposed to a small set of hand-curated guides -- see [Adding a knowledge base guide](#adding-a-knowledge-base-guide) above), the entire workflow is:
+
+1. **Drop a file into `docs/knowledge-base/`.** Supported formats: `.md` (used as-is), `.pdf` (text-layer extraction), `.bpmn`/`.xml` (element names, labels, and `<documentation>` text), `.png`/`.jpg` (OCR'd text labels from a diagram photo or screenshot).
+2. That's it. No command to run, no manual reindex, no restart. A file watcher (`src/knowledge-base/watcher.ts`) picks up any add, edit, or removal under `docs/knowledge-base/` while the Modeler is running and reindexes automatically within a couple of seconds. (There's also a startup reindex for content that changed while the plugin wasn't running -- e.g. pulled via git before Modeler was launched.)
+3. Query it via the `kb_search` tool -- results come back as cited, highlighted excerpts (source file, format, and a snippet), not full documents.
+
+Under the hood this is a SQLite FTS5 full-text index with BM25 ranking (keyword search, not semantic/embedding similarity) -- see [`docs/kb-architecture/architecture.md`](docs/kb-architecture/architecture.md) for the full design rationale, including why FTS5 was chosen over a vector store, and its [Database schema](docs/kb-architecture/architecture.md#database-schema) section (with an ERD) for the three tables and how they relate.
 
 ## Project Structure
 
@@ -388,21 +419,57 @@ camunda-mcp/
 ├── menu.js                         # Menu plugin (plain JS, shows server status)
 ├── package.json                    # Dependencies and build scripts
 ├── tsconfig.json                   # TypeScript config for Node.js side (src/ -> dist/)
-├── tsconfig.client.json            # TypeScript config for renderer side (client/)
 ├── webpack.config.js               # Webpack config: bundles client/ -> client/dist/client.js
+├── dev/
+│   └── layout-tests.ts             # Standalone dev harness for tuning auto-layout options (npm run layout:test)
 ├── src/
-│   ├── server.ts                   # MCP HTTP server (Express + SDK) + renderer bridge
+│   ├── server.ts                   # MCP HTTP server (Express + SDK)
+│   ├── renderer-bridge.ts          # Electron executeJavaScript() bridge to the renderer
 │   ├── menu.ts                     # Menu status tracking (updateMenuStatus, getMenuLabel)
+│   ├── resources/
+│   │   └── registry.ts             # Knowledge base Tier A: curated guides served over resources/list, resources/read
+│   ├── knowledge-base/
+│   │   ├── db.ts                   # better-sqlite3 connection + FTS5 schema (documents, documents_fts)
+│   │   ├── ingest.ts                # Picks the right extractor by file extension, writes one row per document
+│   │   ├── reindex.ts               # Manifest-diff (mtime) reindex -- shared by both triggers below
+│   │   ├── watcher.ts               # Live reindex trigger: chokidar watches docs/knowledge-base/ while running
+│   │   └── extractors/             # markdown.ts, pdf.ts, bpmn-xml.ts, image.ts -- one per supported format
 │   └── tools/
-│       ├── registry.ts             # Tool definitions with Zod input schemas
-│       └── handlers.ts             # Dispatch router + local tool handlers (createModel, createForm, addFormField)
+│       ├── registry.ts             # Thin barrel: re-exports schemas/primitives.ts + schemas/public.ts
+│       ├── schemas/
+│       │   ├── primitives.ts       # Internal per-tool Zod schemas
+│       │   └── public.ts           # The 12 consolidated public tool schemas + standalone tools (kb_search, etc.) + tools[] listing
+│       ├── handlers.ts             # dispatch() + ipcBridge wiring + SCHEMA_BY_TOOL lookup
+│       └── handlers/
+│           ├── local-tools.ts      # Node.js-side tools (createModel, createForm, addFormField, createDmn, deployProcess)
+│           ├── knowledge-base.ts   # kb_search handler: FTS5 MATCH + bm25() ranking + snippet() excerpts
+│           ├── tabs.ts             # Tab management (listOpenDiagrams, switchDiagram)
+│           ├── facade.ts           # FACADE map + resolveFacade (public tool+operation -> internal tool name)
+│           └── compact.ts          # compactResult (the `compact: true` response trimming)
 ├── client/
+│   ├── tsconfig.json                # TypeScript config for the renderer side, discoverable by editors opening any client/*.ts file directly
 │   ├── client.ts                   # Renderer entry: registers bpmn-js plugin + tab manager
-│   ├── bpmn-tools.ts               # bpmn-js DI module, renderer tool implementations
+│   ├── bpmn-tools.ts               # Dispatch hub: TOOL_HANDLERS lookup, dispatchRendererTool(Sync)
+│   ├── element-shared.ts           # Shared element-building helpers (used by elements/ and layout/)
+│   ├── elements/
+│   │   ├── create.ts               # add* element-creation tools
+│   │   ├── mutate.ts               # set*/resize/move/clone/delete/patch tools
+│   │   ├── query.ts                # list_elements, get_element, get_element_bounds
+│   │   └── forms.ts                # linkFormToTask (Camunda 7 & 8)
+│   ├── diagram-io.ts                # get/import/save/export_image, validate_diagram
+│   ├── batch.ts                     # batch_operations
+│   ├── layout/                      # bpmn-auto-layout pipeline (build_process, auto_layout)
+│   │   ├── bo-builders.ts, post-process.ts, composition.ts, subtree.ts,
+│   │   └── pool-boundary.ts, build-process.ts, auto-layout.ts
+│   ├── validate-layout.ts          # layout {operation: "validate"} advisory + auto-fix
 │   ├── tab-manager.ts              # Client extension for tab tracking and switching
 │   ├── types.d.ts                  # Type declarations for camunda-modeler-plugin-helpers + React
+│   ├── __tests__/                  # Vitest unit tests for the layout/composition subsystem
 │   └── dist/
 │       └── client.js               # Webpack output (generated, not checked in)
+├── assets/
+│   └── tessdata/
+│       └── eng.traineddata         # Vendored tesseract.js English OCR data -- avoids a CDN fetch on first use
 └── dist/                           # tsc output (generated, not checked in)
 ```
 
@@ -415,6 +482,8 @@ camunda-mcp/
 - **Form linking in Camunda 8 mode.** Embedding forms via `zeebe:UserTaskForm` depends on the Modeler's moddle extensions. Falls back to `formId` reference if unavailable.
 - **Port conflicts.** The server retries up to 3 ports. If all are in use, startup fails.
 - **Streaming transport:** The server currently uses stateless Streamable HTTP. Server-Sent Events for real-time diagram change notifications is planned for a future release.
+- **Knowledge base indexing is whole-document, not chunked.** Each file in `docs/knowledge-base/` is indexed as one row regardless of length — a `kb_search` result cites the whole document, not a specific section. Heading/page-level chunking is a deferred future refinement.
+- **OCR (`.png`/`.jpg` ingestion) is English-only.** The vendored `tesseract.js` trained data (`assets/tessdata/`) covers English text recognition only.
 
 ## Verification / Testing
 
@@ -446,6 +515,12 @@ curl -s -X POST http://localhost:3100/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"add_element","arguments":{"operation":"start","diagramId":"d","name":"Begin","x":200,"y":200}},"id":4}'
+
+# Search the knowledge base
+curl -s -X POST http://localhost:3100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"kb_search","arguments":{"query":"bpmn best practices"}},"id":5}'
 ```
 
 ### Full E2E workflow test
