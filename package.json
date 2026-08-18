@@ -58,7 +58,7 @@
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
     "camunda-modeler-plugin-helpers": "^6.0.0",
-    "camunda-modeler-webpack-plugin": "^0.2.0",
+    "camunda-modeler-webpack-plugin": "^0.3.0",
     "husky": "^9.1.7",
     "ts-loader": "^9.5.0",
     "typescript": "^5.7.0",
