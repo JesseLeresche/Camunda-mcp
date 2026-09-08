@@ -399,7 +399,7 @@ export const batchOperationsSchema = z.object({
   diagramId: z.string().describe('ID returned by create_model'),
   operations: z.array(z.object({
     tool: z.string().describe('Tool name to execute (e.g. "move_element", "connect_elements", "delete_element", "set_properties", "resize_element", "add_task", "add_gateway", "add_event")'),
-    params: z.record(z.unknown()).describe('Parameters matching the individual tool schema'),
+    params: z.record(z.string(), z.unknown()).describe('Parameters matching the individual tool schema'),
   })).min(1).describe('Ordered list of operations to execute. Use "$ref:N" as a string value to reference the elementId/connectionId returned by operation at index N.'),
 });
 

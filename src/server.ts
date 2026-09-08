@@ -128,7 +128,7 @@ export async function startMcpServer(): Promise<void> {
 
       // Register tools on this per-request server instance
       for (const toolDef of tools) {
-        const zodObject = toolDef.inputSchema as z.AnyZodObject;
+        const zodObject = toolDef.inputSchema as z.ZodObject;
         const toolName = toolDef.name;
 
         (server as any).registerTool(toolName, {
